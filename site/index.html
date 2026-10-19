@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>מפת עסקאות נדל"ן</title>
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
+<style>
+  :root {
+    --bg: #ffffff; --ink: #1d1d1b; --ink2: #5f5e5a; --line: #e4e3df; --accent: #2a78d6; --warn: #b45309;
+    --chip: #f1f0ec;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { font: 14px/1.45 system-ui, "Segoe UI", Arial, sans-serif; color: var(--ink); background: var(--bg); }
+  #map { position: absolute; inset: 0; }
+  .panel { position: absolute; z-index: 2; background: var(--bg); border: 1px solid var(--line); border-radius: 10px;
+           box-shadow: 0 2px 12px rgba(0,0,0,.18); }
+  #legend { top: 12px; left: 12px; padding: 10px 12px; direction: rtl; }
+  #legend h1 { font-size: 14px; margin: 0 0 6px; }
+  #legend .row { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--ink2); }
+  #legend .sw { width: 22px; height: 12px; border-radius: 2px; border: 1px solid rgba(0,0,0,.15); }
+  #detail { top: 12px; right: 12px; bottom: 12px; width: min(460px, calc(100vw - 24px)); display: none; flex-direction: column; overflow: hidden; }
+  #detail.open { display: flex; }
+  #detail header { padding: 12px 14px 8px; border-bottom: 1px solid var(--line); }
+  #detail h2 { margin: 0 24px 4px 0; font-size: 16px; }
+  #close { position: absolute; top: 8px; left: 10px; border: 0; background: none; font-size: 22px; color: var(--ink2); cursor: pointer; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
+  .chip { background: var(--chip); border-radius: 999px; padding: 2px 9px; font-size: 12px; color: var(--ink2); }
+  .chip.warn { color: var(--warn); }
+  .note { font-size: 12px; color: var(--ink2); margin: 6px 0 0; }
+  .actions { display: flex; gap: 8px; margin-top: 8px; }
+  button.link { border: 1px solid var(--line); background: var(--bg); color: var(--accent); border-radius: 6px; padding: 4px 10px; cursor: pointer; font: inherit; }
+  #deals { overflow: auto; flex: 1; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { padding: 6px 8px; text-align: right; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th { position: sticky; top: 0; background: var(--bg); color: var(--ink2); font-weight: 600; }
+  td.num { font-variant-numeric: tabular-nums; }
+  tr.suspect td { color: var(--ink2); }
+  .tag { font-size: 11px; color: var(--warn); }
+  .more { padding: 10px; text-align: center; }
+  .empty { padding: 20px; color: var(--ink2); }
+  @media (max-width: 640px) {
+    #detail { top: auto; left: 8px; right: 8px; bottom: 8px; width: auto; height: 58vh; }
+    #legend { top: 8px; left: 8px; padding: 6px 8px; }
+    #legend .row { font-size: 11px; }
+    body.has-detail #legend { display: none; }
+    th, td { padding: 5px 4px; font-size: 12px; }
+    .tag { white-space: normal; max-width: 120px; }
+    #detail h2 { font-size: 15px; }
+  }
+</style>
+</head>
+<body>
+<div id="map"></div>
+
+<div id="legend" class="panel">
+  <h1>מחיר למ"ר (חציון עסקאות)</h1>
+  <div id="legend-rows"></div>
+  <div class="row" style="margin-top:6px"><span class="sw" style="background:#b8b6ae"></span>אין נתוני מחיר מהימנים</div>
+  <div class="row"><span class="sw" style="border-radius:50%;width:12px;background:#e34948"></span>חלקה ללא בניין במפה</div>
+  <div class="row" style="margin-top:6px">לחצו על בניין או על נקודה כדי לראות עסקאות</div>
+</div>
+
+<aside id="detail" class="panel" aria-live="polite">
+  <button id="close" aria-label="סגור">×</button>
+  <header>
+    <h2 id="title"></h2>
+    <div class="chips" id="chips"></div>
+    <p class="note" id="note"></p>
+    <div class="actions"><button class="link" id="toggle-block"></button></div>
+  </header>
+  <div id="deals"></div>
+</aside>
+
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<script>
+const THRESH = [30000, 40000, 50000, 60000, 75000, 90000];            // median price per m², shekels
+const COLORS = ["#fde8c8", "#fbc88c", "#f59b5e", "#e8683f", "#c4402f", "#8b1e2d", "#5e0f20"];
+const NO_DATA = "#b8b6ae";
+const APT_TYPES = new Set(["דירה בבית קומות", "דירת גן", "דירת גג", "ד. מגורים"]);   // the median price per m² is for flats only
+const fmt = new Intl.NumberFormat("he-IL");
+const money = v => v == null ? "—" : "₪" + fmt.format(Math.round(v));
+const median = a => { const s = [...a].sort((x, y) => x - y), m = s.length >> 1; return s.length ? (s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2) : null; };
+
+const labels = ["עד 30K", "30K–40K", "40K–50K", "50K–60K", "60K–75K", "75K–90K", "מעל 90K"];
+document.getElementById("legend-rows").innerHTML =
+  labels.map((l, i) => `<div class="row"><span class="sw" style="background:${COLORS[i]}"></span>${l}</div>`).join("");
+
+const colorExpr = ["case", ["==", ["get", "ppsqm"], null], NO_DATA,
+  ["step", ["get", "ppsqm"], COLORS[0], ...THRESH.flatMap((v, i) => [v, COLORS[i + 1]])]];
+
+const map = new maplibregl.Map({
+  container: "map", style: "https://tiles.openfreemap.org/styles/liberty",
+  center: [34.7818, 32.0700], zoom: 13, minZoom: 9, hash: true,
+});
+map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "bottom-left");
+map.addControl(new maplibregl.GeolocateControl({}), "bottom-left");
+
+map.on("load", () => {
+  map.addSource("buildings", { type: "geojson", data: "data/buildings.geojson", promoteId: "id" });
+  map.addSource("parcels", { type: "geojson", data: "data/parcels.geojson" });
+  map.addLayer({ id: "b-fill", type: "fill", source: "buildings", minzoom: 12.5,
+    paint: { "fill-color": colorExpr, "fill-opacity": 0.85 } });
+  map.addLayer({ id: "b-line", type: "line", source: "buildings", minzoom: 12.5,
+    paint: { "line-color": "#00000055", "line-width": 0.6 } });
+  map.addLayer({ id: "b-selected", type: "line", source: "buildings", minzoom: 12.5, filter: ["==", ["get", "id"], -1],
+    paint: { "line-color": "#1d4ed8", "line-width": 3 } });
+  map.addLayer({ id: "p-dots", type: "circle", source: "parcels", minzoom: 14,
+    paint: { "circle-color": "#e34948", "circle-radius": 5, "circle-stroke-color": "#fff", "circle-stroke-width": 1.5 } });
+  for (const l of ["b-fill", "p-dots"]) {
+    map.on("mouseenter", l, () => map.getCanvas().style.cursor = "pointer");
+    map.on("mouseleave", l, () => map.getCanvas().style.cursor = "");
+  }
+});
+
+map.on("click", e => {
+  const hit = map.queryRenderedFeatures(e.point, { layers: ["p-dots", "b-fill"] })[0];
+  if (hit) select(hit); else closePanel();
+});
+
+// ---------- detail panel
+const els = Object.fromEntries(["detail", "title", "chips", "note", "deals", "toggle-block", "close"].map(i => [i, document.getElementById(i)]));
+const blockCache = new Map();
+let current = null, blockMode = false;
+
+const loadBlock = gush => {
+  if (!blockCache.has(gush)) blockCache.set(gush, fetch(`data/deals/${gush}.json`).then(r => r.json()));
+  return blockCache.get(gush);
+};
+
+async function select(feature) {
+  const p = feature.properties;
+  const parcels = typeof p.parcels === "string" ? JSON.parse(p.parcels) : p.parcels;
+  const addresses = typeof p.addresses === "string" ? JSON.parse(p.addresses) : (p.addresses || []);
+  const isBuilding = feature.layer.id === "b-fill";
+  map.setFilter("b-selected", ["==", ["get", "id"], isBuilding ? p.id : -1]);
+  current = { parcels, addresses, isBuilding, exact: p.exact === true || p.exact === "true" };
+  blockMode = false;
+  els.detail.classList.add("open");
+  document.body.classList.add("has-detail");
+  els.title.textContent = addresses.length ? addresses.slice(0, 3).join(" · ") : "בניין ללא כתובת רשומה";
+  els.deals.innerHTML = '<div class="empty">טוען…</div>';
+  await render();
+}
+
+async function render() {
+  const { parcels, addresses, isBuilding, exact } = current;
+  const gushes = [...new Set(parcels.map(s => s.split("/")[0]))];
+  const blocks = await Promise.all(gushes.map(loadBlock));
+  const all = blocks.flatMap((b, i) => b.map(d => ({ ...d, gush: gushes[i] })));
+  const mine = new Set(parcels);
+  const own = all.filter(d => mine.has(`${d.gush}/${d.c}`));
+  const shown = blockMode ? all : own;
+
+  // derived fields: the paid amount is for the share sold, so the whole-unit price divides by the share
+  const enrich = d => { const unit = d.p ? d.paid / d.p : null; return { ...d, unit, ppsqm: unit && d.a ? unit / d.a : null }; };
+  const rowsAll = shown.map(enrich).sort((a, b) => b.d.localeCompare(a.d));
+  const good = rowsAll.filter(d => !d.s && d.ppsqm && APT_TYPES.has(d.t));
+  const gushTxt = gushes.map(g => `גוש ${g}`).join(", ");
+
+  els.chips.innerHTML = [
+    `<span class="chip">${fmt.format(rowsAll.length)} עסקאות</span>`,
+    good.length ? `<span class="chip">חציון ${money(median(good.map(d => d.ppsqm)))} למ"ר</span>` : "",
+    `<span class="chip">${blockMode ? gushTxt : parcels.map(s => "חלקה " + s).slice(0, 3).join(" · ")}${!blockMode && parcels.length > 3 ? " …" : ""}</span>`,
+    isBuilding && !exact ? '<span class="chip warn">מיקום משוער</span>' : "",
+    parcels.length > 1 ? `<span class="chip warn">${parcels.length} חלקות</span>` : "",
+  ].join("");
+  els.note.textContent = blockMode
+    ? "כל העסקאות בגוש (חלקות שנסרקו בלבד)."
+    : "העסקאות משויכות לפי גוש וחלקה. אם בחלקה כמה בניינים, מוצגות עסקאות כולם."
+      + (isBuilding && !exact ? " נקודת החלקה נמצאת ליד הבניין ולא בתוכו." : "");
+  els["toggle-block"].textContent = blockMode ? "חזרה לחלקה" : "הצג את כל הגוש";
+  els["toggle-block"].style.display = "";
+
+  const LIMIT = 300;
+  const body = rowsAll.slice(0, LIMIT).map(d => {
+    const tags = [d.p && d.p < 1 ? `שולם ${money(d.paid)} עבור ${Math.round(d.p * 100)}%` : "", d.s ? "נתון חשוד" : ""].filter(Boolean);
+    return `<tr class="${d.s ? "suspect" : ""}">
+      <td class="num">${d.d.split("-").reverse().join("/")}</td>
+      ${blockMode ? `<td class="num">${d.c}</td>` : ""}
+      <td>${d.t}</td>
+      <td class="num">${d.r ?? "—"}</td>
+      <td class="num">${d.a ?? "—"}</td>
+      <td class="num">${money(d.unit ?? d.paid)}${tags.length ? `<div class="tag">${tags.join(" · ")}</div>` : ""}</td>
+      <td class="num">${money(d.ppsqm)}</td></tr>`;
+  }).join("");
+  els.deals.innerHTML = rowsAll.length
+    ? `<table><thead><tr><th>תאריך</th>${blockMode ? "<th>חלקה</th>" : ""}<th>סוג</th><th>חדרים</th><th>מ"ר</th><th>מחיר</th><th>למ"ר</th></tr></thead><tbody>${body}</tbody></table>`
+      + (rowsAll.length > LIMIT ? `<div class="more">מוצגות ${LIMIT} העסקאות האחרונות מתוך ${fmt.format(rowsAll.length)}</div>` : "")
+    : '<div class="empty">לא נמצאו עסקאות.</div>';
+}
+
+function closePanel() { els.detail.classList.remove("open"); document.body.classList.remove("has-detail"); map.setFilter("b-selected", ["==", ["get", "id"], -1]); }
+els.close.addEventListener("click", closePanel);
+els["toggle-block"].addEventListener("click", async () => { blockMode = !blockMode; await render(); });
+</script>
+</body>
+</html>

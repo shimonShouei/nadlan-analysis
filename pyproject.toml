@@ -13,4 +13,5 @@ dependencies = [
     "pandas>=2.2",
     "pyarrow>=26.0.0",
     "python-bidi>=0.6.11",
+    "shapely>=2.2.0",
 ]

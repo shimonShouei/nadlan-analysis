@@ -55,3 +55,15 @@ uv run jupyter lab analysis.ipynb                          # interactive
 - Wrap all Hebrew text passed to matplotlib in `heb()`. It is the identity on matplotlib >= 3.11, which reorders right-to-left
   text itself (reordering again reverses it), and uses python-bidi `get_display` on older versions.
   Font is Arial for Hebrew glyphs on Windows.
+
+## Map site prototype (Tel Aviv)
+
+Goal: a public map where every building with deals is clickable and lists its deals (block-level fallback when a parcel is ambiguous).
+Static site, no backend; preview with `python -m http.server --directory site`, then open `http://localhost:8000`.
+
+- `scripts/fetch_parcel_addresses.py` (GovMap scrape, resumable, writes `data/parcel_addresses.sqlite`) gives one label point per parcel (EPSG:3857) plus addresses.
+- `scripts/match_buildings.py` assigns each parcel point to an OpenStreetMap building (inside, else nearest within 15 m). Needs `data/osm/<city>_buildings.json` from an Overpass `way["building"]; out geom;` query (send a User-Agent or Overpass returns 406).
+- `scripts/build_site_data.py` (run without `-I`, it imports `match_buildings`) writes `site/data/` (git-ignored): `buildings.geojson`, `parcels.geojson` (unmatched parcels), `deals/<gush>.json` (loaded on click).
+- `site/index.html`: MapLibre GL + OpenFreeMap tiles, Hebrew RTL UI. Colours buildings by median price per m² of flats; the median uses `unit_price` (see Partial shares above).
+- Deals attach to parcels, not buildings, so a click shows the parcel's deals; a building can hold several parcels, and a parcel several buildings. The panel says so and offers the whole block.
+- The `suspect` flag in `build_site_data.py` duplicates the notebook's plausibility tests (minus the local-outlier test). Factor into a shared module before this grows.
