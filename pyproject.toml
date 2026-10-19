@@ -1,0 +1,16 @@
+[project]
+name = "nadlan-analysis"
+version = "0.1.0"
+description = "Basic analysis of Israel Tax Authority real-estate deals"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "ipykernel>=7.4.0",
+    "jupyter>=1.1.1",
+    "matplotlib>=3.9",
+    "nbconvert>=7.17.2",
+    "nbformat>=5.11.1",
+    "pandas>=2.2",
+    "pyarrow>=26.0.0",
+    "python-bidi>=0.6.11",
+]
