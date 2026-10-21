@@ -7,8 +7,9 @@
 <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
 <style>
   :root {
-    --bg: #ffffff; --ink: #1d1d1b; --ink2: #5f5e5a; --line: #e4e3df; --accent: #2a78d6; --warn: #b45309;
-    --chip: #f1f0ec;
+    color-scheme: light;
+    --bg: #ffffff; --ink: #1d1d1b; --ink2: #5f5e5a; --ink3: #8a8983; --line: #e4e3df; --accent: #2a78d6;
+    --warn: #b45309; --chip: #f1f0ec; --bar: #2a78d6;
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; }
@@ -16,15 +17,27 @@
   #map { position: absolute; inset: 0; }
   .panel { position: absolute; z-index: 2; background: var(--bg); border: 1px solid var(--line); border-radius: 10px;
            box-shadow: 0 2px 12px rgba(0,0,0,.18); }
-  #legend { top: 12px; left: 12px; padding: 10px 12px; direction: rtl; }
+  #legend { top: 12px; left: 12px; padding: 10px 12px; }
   #legend h1 { font-size: 14px; margin: 0 0 6px; }
   #legend .row { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--ink2); }
   #legend .sw { width: 22px; height: 12px; border-radius: 2px; border: 1px solid rgba(0,0,0,.15); }
-  #detail { top: 12px; right: 12px; bottom: 12px; width: min(460px, calc(100vw - 24px)); display: none; flex-direction: column; overflow: hidden; }
-  #detail.open { display: flex; }
+  #legend .dot { width: 12px; height: 12px; border-radius: 50%; }
+  #open-stats { top: 12px; right: 12px; padding: 8px 14px; font: inherit; font-weight: 600; color: var(--accent); cursor: pointer; }
+  body.has-panel #open-stats { display: none; }
+
+  #side { top: 12px; right: 12px; bottom: 12px; width: min(480px, calc(100vw - 24px)); display: none; flex-direction: column; overflow: hidden; }
+  #side.open { display: flex; }
+  .tabs { display: flex; border-bottom: 1px solid var(--line); padding: 0 10px; gap: 4px; }
+  .tabs button { border: 0; background: none; font: inherit; padding: 10px 10px 8px; color: var(--ink2); cursor: pointer; border-bottom: 2px solid transparent; }
+  .tabs button[aria-selected="true"] { color: var(--ink); font-weight: 600; border-bottom-color: var(--accent); }
+  .tabs button:disabled { color: var(--ink3); cursor: default; }
+  #close { margin-inline-start: auto; font-size: 22px; line-height: 1; }
+  .view { display: none; flex: 1; flex-direction: column; overflow: hidden; }
+  .view.active { display: flex; }
+
+  /* details tab */
   #detail header { padding: 12px 14px 8px; border-bottom: 1px solid var(--line); }
-  #detail h2 { margin: 0 24px 4px 0; font-size: 16px; }
-  #close { position: absolute; top: 8px; left: 10px; border: 0; background: none; font-size: 22px; color: var(--ink2); cursor: pointer; }
+  #detail h2 { margin: 0 0 4px; font-size: 16px; }
   .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
   .chip { background: var(--chip); border-radius: 999px; padding: 2px 9px; font-size: 12px; color: var(--ink2); }
   .chip.warn { color: var(--warn); }
@@ -40,14 +53,39 @@
   .tag { font-size: 11px; color: var(--warn); }
   .more { padding: 10px; text-align: center; }
   .empty { padding: 20px; color: var(--ink2); }
+
+  /* stats tab */
+  #stats { overflow: auto; padding: 12px 14px 16px; }
+  #stats .scope { font-size: 12px; color: var(--ink2); margin: 0 0 10px; }
+  .tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 14px; }
+  .tile { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+  .tile .label { font-size: 12px; color: var(--ink2); }
+  .tile .value { font-size: 20px; font-weight: 600; }
+  .tile .sub { font-size: 11px; color: var(--ink3); }
+  #stats h3 { font-size: 13px; margin: 16px 0 2px; }
+  #stats .cap { font-size: 11px; color: var(--ink3); margin: 0 0 4px; }
+  .chart { position: relative; }
+  .chart svg { display: block; width: 100%; height: auto; direction: ltr; overflow: visible; }
+  .chart text { font-size: 10px; fill: var(--ink3); font-variant-numeric: tabular-nums; }
+  .chart .grid { stroke: var(--line); stroke-width: 1; }
+  .grid-tip .maplibregl-popup-content { padding: 6px 10px; font-size: 12px; direction: rtl; text-align: right; }
+  .tip { position: absolute; pointer-events: none; background: var(--ink); color: #fff; font-size: 12px; padding: 4px 8px;
+         border-radius: 6px; white-space: nowrap; transform: translate(-50%, -110%); display: none; }
+  .hbar { display: grid; grid-template-columns: 9em 1fr 4.5em; gap: 6px; align-items: center; font-size: 12px; margin: 3px 0; }
+  .hbar .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink2); }
+  .hbar .track { height: 10px; }
+  .hbar .fill { height: 10px; background: var(--bar); border-radius: 0 4px 4px 0; min-width: 2px; }
+  .hbar .val { font-variant-numeric: tabular-nums; color: var(--ink2); }
+  #stats table { font-size: 12px; }
+
   @media (max-width: 640px) {
-    #detail { top: auto; left: 8px; right: 8px; bottom: 8px; width: auto; height: 58vh; }
+    #side { top: auto; left: 8px; right: 8px; bottom: 8px; width: auto; height: 62vh; }
     #legend { top: 8px; left: 8px; padding: 6px 8px; }
     #legend .row { font-size: 11px; }
-    body.has-detail #legend { display: none; }
+    #open-stats { top: 8px; right: 8px; }
+    body.has-panel #legend { display: none; }
     th, td { padding: 5px 4px; font-size: 12px; }
     .tag { white-space: normal; max-width: 120px; }
-    #detail h2 { font-size: 15px; }
   }
 </style>
 </head>
@@ -55,97 +93,233 @@
 <div id="map"></div>
 
 <div id="legend" class="panel">
-  <h1>מחיר למ"ר (חציון עסקאות)</h1>
+  <h1 id="legend-title"></h1>
   <div id="legend-rows"></div>
   <div class="row" style="margin-top:6px"><span class="sw" style="background:#b8b6ae"></span>אין נתוני מחיר מהימנים</div>
-  <div class="row"><span class="sw" style="border-radius:50%;width:12px;background:#e34948"></span>חלקה ללא בניין במפה</div>
-  <div class="row" style="margin-top:6px">לחצו על בניין או על נקודה כדי לראות עסקאות</div>
+  <div class="row" id="lg-zoomed-out">כל ריבוע: חציון האזור. התקרבו כדי לראות בניינים</div>
+  <div class="row lg-zoomed-in"><span class="dot" style="background:#e34948;border:1.5px solid #fff"></span>חלקה ללא בניין במפה</div>
+  <div class="row lg-zoomed-in"><span class="dot" style="background:#fff;border:2.5px solid #4a3aa7"></span>מיקום לפי גוש בלבד</div>
 </div>
 
-<aside id="detail" class="panel" aria-live="polite">
-  <button id="close" aria-label="סגור">×</button>
-  <header>
-    <h2 id="title"></h2>
-    <div class="chips" id="chips"></div>
-    <p class="note" id="note"></p>
-    <div class="actions"><button class="link" id="toggle-block"></button></div>
-  </header>
-  <div id="deals"></div>
+<button id="open-stats" class="panel">סטטיסטיקה לאזור המוצג</button>
+
+<aside id="side" class="panel" aria-live="polite">
+  <div class="tabs" role="tablist">
+    <button role="tab" id="tab-detail" aria-selected="false" disabled>עסקאות</button>
+    <button role="tab" id="tab-stats" aria-selected="false">סטטיסטיקה לאזור המוצג</button>
+    <button id="close" aria-label="סגור">×</button>
+  </div>
+  <section class="view" id="detail">
+    <header>
+      <h2 id="title"></h2>
+      <div class="chips" id="chips"></div>
+      <p class="note" id="note"></p>
+      <div class="actions"><button class="link" id="toggle-block"></button></div>
+    </header>
+    <div id="deals"></div>
+  </section>
+  <section class="view" id="stats"></section>
 </aside>
 
 <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
 <script>
-const THRESH = [30000, 40000, 50000, 60000, 75000, 90000];            // median price per m², shekels
+// Map labels in Hebrew need the RTL shaping plugin, otherwise MapLibre draws them reversed.
+maplibregl.setRTLTextPlugin("https://unpkg.com/@mapbox/mapbox-gl-rtl-text@0.2.3/mapbox-gl-rtl-text.min.js", true);
+
 const COLORS = ["#fde8c8", "#fbc88c", "#f59b5e", "#e8683f", "#c4402f", "#8b1e2d", "#5e0f20"];
 const NO_DATA = "#b8b6ae";
-const APT_TYPES = new Set(["דירה בבית קומות", "דירת גן", "דירת גג", "ד. מגורים"]);   // the median price per m² is for flats only
+const DETAIL_ZOOM = 14;                 // from here on the map loads grid cells (buildings) instead of the price squares
+const MAX_CELLS = 120;                  // keep at most this many downloaded cells in memory (per kind)
 const fmt = new Intl.NumberFormat("he-IL");
+const compact = new Intl.NumberFormat("he-IL", { notation: "compact", maximumFractionDigits: 1 });
 const money = v => v == null ? "—" : "₪" + fmt.format(Math.round(v));
+const moneyC = v => v == null ? "—" : "₪" + compact.format(v);
 const median = a => { const s = [...a].sort((x, y) => x - y), m = s.length >> 1; return s.length ? (s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2) : null; };
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const k = v => v >= 1000 ? Math.round(v / 1000) + "K" : String(v);
 
-const labels = ["עד 30K", "30K–40K", "40K–50K", "50K–60K", "60K–75K", "75K–90K", "מעל 90K"];
-document.getElementById("legend-rows").innerHTML =
-  labels.map((l, i) => `<div class="row"><span class="sw" style="background:${COLORS[i]}"></span>${l}</div>`).join("");
-
-const colorExpr = ["case", ["==", ["get", "ppsqm"], null], NO_DATA,
-  ["step", ["get", "ppsqm"], COLORS[0], ...THRESH.flatMap((v, i) => [v, COLORS[i + 1]])]];
+let META, SETTLEMENTS, APT_TYPES, APT_IDX;
+// Two kinds of per-cell files: "cells" (buildings and points, drawn) and "stats" (deal summaries, stats tab only)
+const store = { cells: { data: new Map(), pending: new Map(), keys: null },
+                stats: { data: new Map(), pending: new Map(), keys: null } };
+let shownKey = "";                      // which cells the map sources currently hold
 
 const map = new maplibregl.Map({
   container: "map", style: "https://tiles.openfreemap.org/styles/liberty",
-  center: [34.7818, 32.0700], zoom: 13, minZoom: 9, hash: true,
+  center: [34.95, 31.75], zoom: 7.6, minZoom: 6, hash: true,
 });
 map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "bottom-left");
 map.addControl(new maplibregl.GeolocateControl({}), "bottom-left");
 
-map.on("load", () => {
-  map.addSource("buildings", { type: "geojson", data: "data/buildings.geojson", promoteId: "id" });
-  map.addSource("parcels", { type: "geojson", data: "data/parcels.geojson" });
-  map.addLayer({ id: "b-fill", type: "fill", source: "buildings", minzoom: 12.5,
+const empty = { type: "FeatureCollection", features: [] };
+
+map.on("load", async () => {
+  // the basemap's 3D buildings are costly to draw in dense cities and sit under our own buildings
+  if (map.getLayer("building-3d")) map.removeLayer("building-3d");
+  [META, SETTLEMENTS] = await Promise.all(["data/meta.json", "data/settlements.json"].map(u => fetch(u).then(r => r.json())));
+  APT_TYPES = new Set(META.apt_types);
+  APT_IDX = new Set(META.types.map((t, i) => APT_TYPES.has(t) ? i : -1).filter(i => i >= 0));
+  store.cells.keys = new Set(META.cells);
+  store.stats.keys = new Set(META.stat_cells);
+
+  const th = META.thresholds, cols = COLORS.slice(0, th.length + 1);
+  const labels = cols.map((_, i) => i === 0 ? `עד ${k(th[0])}` : i === th.length ? `מעל ${k(th[i - 1])}` : `${k(th[i - 1])}–${k(th[i])}`);
+  document.getElementById("legend-title").textContent = `מחיר למ"ר, דירות שנמכרו מ-${META.color_from} (חציון)`;
+  document.getElementById("legend-rows").innerHTML =
+    labels.map((l, i) => `<div class="row"><span class="sw" style="background:${cols[i]}"></span>${l}</div>`).join("");
+  const colorExpr = ["case", ["==", ["get", "ppsqm"], null], NO_DATA,
+    ["step", ["get", "ppsqm"], cols[0], ...th.flatMap((v, i) => [v, cols[i + 1]])]];
+
+  map.addSource("grid", { type: "geojson", data: "data/grid.geojson", maxzoom: 12 });
+  // maxzoom 15: tiles are cut up to z15 and overzoomed beyond, far less work per update than the default 18
+  map.addSource("buildings", { type: "geojson", data: empty, promoteId: "id", maxzoom: 15 });
+  map.addSource("points", { type: "geojson", data: empty, maxzoom: 15 });
+
+  // Zoomed out: price squares, coarser when further out. Drawn under the basemap labels so place names stay readable.
+  const firstLabel = map.getStyle().layers.find(l => l.type === "symbol")?.id;
+  const gridZooms = { 1000: [0, 10], 500: [10, 12], 250: [12, DETAIL_ZOOM] };
+  for (const m of META.grid_m) map.addLayer({ id: `grid-${m}`, type: "fill", source: "grid", filter: ["==", ["get", "m"], m],
+    minzoom: gridZooms[m][0], maxzoom: gridZooms[m][1],
+    paint: { "fill-color": colorExpr, "fill-opacity": 0.78, "fill-outline-color": "rgba(255,255,255,0.25)" } }, firstLabel);
+  map.addLayer({ id: "b-fill", type: "fill", source: "buildings", minzoom: DETAIL_ZOOM,
     paint: { "fill-color": colorExpr, "fill-opacity": 0.85 } });
-  map.addLayer({ id: "b-line", type: "line", source: "buildings", minzoom: 12.5,
+  map.addLayer({ id: "b-line", type: "line", source: "buildings", minzoom: DETAIL_ZOOM,
     paint: { "line-color": "#00000055", "line-width": 0.6 } });
-  map.addLayer({ id: "b-selected", type: "line", source: "buildings", minzoom: 12.5, filter: ["==", ["get", "id"], -1],
+  map.addLayer({ id: "b-selected", type: "line", source: "buildings", minzoom: DETAIL_ZOOM, filter: ["==", ["get", "id"], -1],
     paint: { "line-color": "#1d4ed8", "line-width": 3 } });
-  map.addLayer({ id: "p-dots", type: "circle", source: "parcels", minzoom: 14,
+  map.addLayer({ id: "p-dots", type: "circle", source: "points", minzoom: 14, filter: ["!", ["get", "block"]],
     paint: { "circle-color": "#e34948", "circle-radius": 5, "circle-stroke-color": "#fff", "circle-stroke-width": 1.5 } });
-  for (const l of ["b-fill", "p-dots"]) {
+  map.addLayer({ id: "p-blocks", type: "circle", source: "points", minzoom: DETAIL_ZOOM, filter: ["get", "block"],
+    paint: { "circle-color": "#fff", "circle-radius": 7, "circle-stroke-color": "#4a3aa7", "circle-stroke-width": 2.5 } });
+  const gridLayers = META.grid_m.map(m => `grid-${m}`);
+  const tip = new maplibregl.Popup({ closeButton: false, closeOnClick: false, className: "grid-tip", offset: 8 });
+  for (const l of gridLayers) {
+    map.on("mousemove", l, e => {
+      const p = e.features[0].properties;
+      tip.setLngLat(e.lngLat).setHTML(`<b>${money(p.ppsqm)} למ"ר</b><br>${fmt.format(p.n)} דירות מ-${META.color_from} · ריבוע ${p.m >= 1000 ? p.m / 1000 + ' ק"מ' : p.m + " מ'"}`).addTo(map);
+    });
+    map.on("mouseleave", l, () => tip.remove());
+  }
+  for (const l of [...gridLayers, "b-fill", "p-dots", "p-blocks"]) {
     map.on("mouseenter", l, () => map.getCanvas().style.cursor = "pointer");
     map.on("mouseleave", l, () => map.getCanvas().style.cursor = "");
   }
+  onMove();
 });
+
+// ---------- grid cells
+function cellsInView(kind) {
+  const b = map.getBounds(), c = META.cell, keys = store[kind].keys, out = [];
+  for (let x = Math.floor(b.getWest() / c); x <= Math.floor(b.getEast() / c); x++)
+    for (let y = Math.floor(b.getSouth() / c); y <= Math.floor(b.getNorth() / c); y++)
+      if (keys.has(`${x}_${y}`)) out.push(`${x}_${y}`);
+  return out;
+}
+
+async function fetchCells(kind, keys) {
+  const { data, pending } = store[kind], now = Date.now();
+  keys.forEach(key => data.has(key) && (data.get(key).used = now));
+  await Promise.all(keys.filter(key => !data.has(key)).map(key => {
+    if (!pending.has(key)) pending.set(key, fetch(`data/${kind}/${key}.json`).then(r => r.json())
+      .then(d => { data.set(key, { d, used: Date.now() }); pending.delete(key); }));
+    return pending.get(key);
+  }));
+  if (data.size > MAX_CELLS) {
+    const keep = new Set(keys);
+    [...data.entries()].filter(([key]) => !keep.has(key)).sort((a, b) => a[1].used - b[1].used)
+      .slice(0, data.size - MAX_CELLS).forEach(([key]) => data.delete(key));
+  }
+}
+
+// The map sources hold only the cells in view: every setData re-tiles everything it is given.
+async function showCells() {
+  const keys = cellsInView("cells");
+  await fetchCells("cells", keys);
+  const key = keys.join(",");
+  if (key === shownKey || keys.join(",") !== cellsInView("cells").join(",")) return;   // unchanged, or view moved on
+  shownKey = key;
+  const shown = keys.map(k => store.cells.data.get(k).d);
+  map.getSource("buildings").setData({ type: "FeatureCollection", features: shown.flatMap(c => c.b.features) });
+  map.getSource("points").setData({ type: "FeatureCollection", features: shown.flatMap(c => c.p.features) });
+}
+
+let moveTimer;
+function onMove() {
+  const zoomedIn = map.getZoom() >= DETAIL_ZOOM;
+  document.getElementById("lg-zoomed-out").style.display = zoomedIn ? "none" : "";
+  document.querySelectorAll(".lg-zoomed-in").forEach(e => e.style.display = zoomedIn ? "" : "none");
+  clearTimeout(moveTimer);
+  moveTimer = setTimeout(async () => {
+    const jobs = [];
+    if (map.getZoom() >= DETAIL_ZOOM) jobs.push(showCells());
+    if (statsOpen()) jobs.push(updateStats());
+    await Promise.all(jobs);
+  }, 250);
+}
+async function updateStats() {
+  if (map.getZoom() >= DETAIL_ZOOM) { renderStats(true); await fetchCells("stats", cellsInView("stats")); }
+  renderStats();
+}
+map.on("moveend", () => META && onMove());
 
 map.on("click", e => {
-  const hit = map.queryRenderedFeatures(e.point, { layers: ["p-dots", "b-fill"] })[0];
-  if (hit) select(hit); else closePanel();
+  const hit = map.queryRenderedFeatures(e.point, { layers: ["p-blocks", "p-dots", "b-fill", ...META.grid_m.map(m => `grid-${m}`)].filter(l => map.getLayer(l)) })[0];
+  if (!hit) return;
+  if (hit.layer.id.startsWith("grid-")) map.flyTo({ center: e.lngLat, zoom: Math.min(DETAIL_ZOOM + 1, map.getZoom() + 2) });
+  else select(hit);
 });
 
-// ---------- detail panel
-const els = Object.fromEntries(["detail", "title", "chips", "note", "deals", "toggle-block", "close"].map(i => [i, document.getElementById(i)]));
+// ---------- side panel and tabs
+const $ = id => document.getElementById(id);
+const els = Object.fromEntries(["side", "title", "chips", "note", "deals", "toggle-block", "close", "tab-detail", "tab-stats", "detail", "stats"].map(i => [i, $(i)]));
+const statsOpen = () => els.side.classList.contains("open") && els["tab-stats"].getAttribute("aria-selected") === "true";
+
+function showTab(name) {
+  els.side.classList.add("open");
+  document.body.classList.add("has-panel");
+  for (const t of ["detail", "stats"]) {
+    els[`tab-${t}`].setAttribute("aria-selected", t === name);
+    els[t].classList.toggle("active", t === name);
+  }
+  if (name === "stats") updateStats();
+}
+function closePanel() {
+  els.side.classList.remove("open"); document.body.classList.remove("has-panel");
+  map.getLayer("b-selected") && map.setFilter("b-selected", ["==", ["get", "id"], -1]);
+}
+els.close.addEventListener("click", closePanel);
+els["tab-detail"].addEventListener("click", () => showTab("detail"));
+els["tab-stats"].addEventListener("click", () => showTab("stats"));
+$("open-stats").addEventListener("click", () => showTab("stats"));
+
+// ---------- details tab
 const blockCache = new Map();
 let current = null, blockMode = false;
 
 const loadBlock = gush => {
-  if (!blockCache.has(gush)) blockCache.set(gush, fetch(`data/deals/${gush}.json`).then(r => r.json()));
+  if (!blockCache.has(gush)) blockCache.set(gush, fetch(`data/deals/${gush}.json`).then(r => r.ok ? r.json() : []));
   return blockCache.get(gush);
 };
 
 async function select(feature) {
   const p = feature.properties;
-  const parcels = typeof p.parcels === "string" ? JSON.parse(p.parcels) : p.parcels;
-  const addresses = typeof p.addresses === "string" ? JSON.parse(p.addresses) : (p.addresses || []);
+  const parse = v => typeof v === "string" ? JSON.parse(v) : (v || []);
+  const parcels = parse(p.parcels), addresses = parse(p.addresses);
   const isBuilding = feature.layer.id === "b-fill";
+  const isBlock = p.block === true || p.block === "true";
   map.setFilter("b-selected", ["==", ["get", "id"], isBuilding ? p.id : -1]);
-  current = { parcels, addresses, isBuilding, exact: p.exact === true || p.exact === "true" };
+  current = { parcels, addresses, isBuilding, isBlock, exact: p.exact === true || p.exact === "true" };
   blockMode = false;
-  els.detail.classList.add("open");
-  document.body.classList.add("has-detail");
-  els.title.textContent = addresses.length ? addresses.slice(0, 3).join(" · ") : "בניין ללא כתובת רשומה";
+  els["tab-detail"].disabled = false;
+  showTab("detail");
+  els.title.textContent = isBlock ? `גוש ${parcels[0].split("/")[0]}`
+    : addresses.length ? addresses.slice(0, 3).join(" · ") : "ללא כתובת רשומה";
   els.deals.innerHTML = '<div class="empty">טוען…</div>';
-  await render();
+  await renderDetail();
 }
 
-async function render() {
-  const { parcels, addresses, isBuilding, exact } = current;
+async function renderDetail() {
+  const { parcels, isBuilding, isBlock, exact } = current;
   const gushes = [...new Set(parcels.map(s => s.split("/")[0]))];
   const blocks = await Promise.all(gushes.map(loadBlock));
   const all = blocks.flatMap((b, i) => b.map(d => ({ ...d, gush: gushes[i] })));
@@ -157,43 +331,209 @@ async function render() {
   const enrich = d => { const unit = d.p ? d.paid / d.p : null; return { ...d, unit, ppsqm: unit && d.a ? unit / d.a : null }; };
   const rowsAll = shown.map(enrich).sort((a, b) => b.d.localeCompare(a.d));
   const good = rowsAll.filter(d => !d.s && d.ppsqm && APT_TYPES.has(d.t));
-  const gushTxt = gushes.map(g => `גוש ${g}`).join(", ");
+  const showChelka = blockMode || isBlock;
 
   els.chips.innerHTML = [
     `<span class="chip">${fmt.format(rowsAll.length)} עסקאות</span>`,
     good.length ? `<span class="chip">חציון ${money(median(good.map(d => d.ppsqm)))} למ"ר</span>` : "",
-    `<span class="chip">${blockMode ? gushTxt : parcels.map(s => "חלקה " + s).slice(0, 3).join(" · ")}${!blockMode && parcels.length > 3 ? " …" : ""}</span>`,
+    blockMode || isBlock ? "" : `<span class="chip">${parcels.map(s => "חלקה " + s).slice(0, 3).join(" · ")}${parcels.length > 3 ? " …" : ""}</span>`,
+    isBlock ? '<span class="chip warn">מיקום לפי גוש</span>' : "",
     isBuilding && !exact ? '<span class="chip warn">מיקום משוער</span>' : "",
-    parcels.length > 1 ? `<span class="chip warn">${parcels.length} חלקות</span>` : "",
+    !isBlock && parcels.length > 1 ? `<span class="chip warn">${parcels.length} חלקות</span>` : "",
   ].join("");
-  els.note.textContent = blockMode
-    ? "כל העסקאות בגוש (חלקות שנסרקו בלבד)."
+  els.note.textContent = blockMode ? "כל העסקאות בגוש."
+    : isBlock ? `עסקאות ב-${parcels.length} חלקות שאינן קיימות היום במפת הקדסטר (כנראה אוחדו או חולקו מחדש). המיקום הוא מרכז הגוש.`
     : "העסקאות משויכות לפי גוש וחלקה. אם בחלקה כמה בניינים, מוצגות עסקאות כולם."
       + (isBuilding && !exact ? " נקודת החלקה נמצאת ליד הבניין ולא בתוכו." : "");
-  els["toggle-block"].textContent = blockMode ? "חזרה לחלקה" : "הצג את כל הגוש";
-  els["toggle-block"].style.display = "";
+  els["toggle-block"].textContent = blockMode ? "חזרה" : "הצג את כל הגוש";
 
   const LIMIT = 300;
   const body = rowsAll.slice(0, LIMIT).map(d => {
     const tags = [d.p && d.p < 1 ? `שולם ${money(d.paid)} עבור ${Math.round(d.p * 100)}%` : "", d.s ? "נתון חשוד" : ""].filter(Boolean);
     return `<tr class="${d.s ? "suspect" : ""}">
       <td class="num">${d.d.split("-").reverse().join("/")}</td>
-      ${blockMode ? `<td class="num">${d.c}</td>` : ""}
-      <td>${d.t}</td>
+      ${showChelka ? `<td class="num">${d.c}</td>` : ""}
+      <td>${esc(d.t)}</td>
       <td class="num">${d.r ?? "—"}</td>
       <td class="num">${d.a ?? "—"}</td>
       <td class="num">${money(d.unit ?? d.paid)}${tags.length ? `<div class="tag">${tags.join(" · ")}</div>` : ""}</td>
       <td class="num">${money(d.ppsqm)}</td></tr>`;
   }).join("");
   els.deals.innerHTML = rowsAll.length
-    ? `<table><thead><tr><th>תאריך</th>${blockMode ? "<th>חלקה</th>" : ""}<th>סוג</th><th>חדרים</th><th>מ"ר</th><th>מחיר</th><th>למ"ר</th></tr></thead><tbody>${body}</tbody></table>`
+    ? `<table><thead><tr><th>תאריך</th>${showChelka ? "<th>חלקה</th>" : ""}<th>סוג</th><th>חדרים</th><th>מ"ר</th><th>מחיר</th><th>למ"ר</th></tr></thead><tbody>${body}</tbody></table>`
       + (rowsAll.length > LIMIT ? `<div class="more">מוצגות ${LIMIT} העסקאות האחרונות מתוך ${fmt.format(rowsAll.length)}</div>` : "")
     : '<div class="empty">לא נמצאו עסקאות.</div>';
 }
+els["toggle-block"].addEventListener("click", async () => { blockMode = !blockMode; await renderDetail(); });
 
-function closePanel() { els.detail.classList.remove("open"); document.body.classList.remove("has-detail"); map.setFilter("b-selected", ["==", ["get", "id"], -1]); }
-els.close.addEventListener("click", closePanel);
-els["toggle-block"].addEventListener("click", async () => { blockMode = !blockMode; await render(); });
+// ---------- stats tab
+// Zoomed in: exact, from the per-point deal summaries of the loaded cells inside the view.
+// Zoomed out: from the settlements whose point is in view; medians come from summed histograms (to within ~4%).
+function aggregate() {
+  const b = map.getBounds();
+  const inView = (lon, lat) => b.contains([lon, lat]);
+  const agg = { byYear: new Map(), byType: new Map(), total: 0, flatPpsqm: new Map(), flatPrice: new Map(), settlements: null };
+  const addCount = (y, t, n) => {
+    agg.total += n;
+    agg.byYear.set(y, (agg.byYear.get(y) || 0) + n);
+    agg.byType.set(t, (agg.byType.get(t) || 0) + n);
+  };
+  if (map.getZoom() >= DETAIL_ZOOM) {
+    agg.mode = "exact";
+    for (const key of cellsInView("stats")) {
+      const c = store.stats.data.get(key);
+      if (!c) { agg.loading = true; continue; }
+      for (const [lon, lat, counts, flats] of c.d) {
+        if (!inView(lon, lat)) continue;
+        for (const [y, t, n] of counts) addCount(y, t, n);
+        for (const [y, kPrice, a] of flats) {
+          const price = kPrice * 1000;
+          if (!agg.flatPpsqm.has(y)) { agg.flatPpsqm.set(y, []); agg.flatPrice.set(y, []); }
+          agg.flatPpsqm.get(y).push(price / a);
+          agg.flatPrice.get(y).push(price);
+        }
+      }
+    }
+  } else {
+    agg.mode = "hist";
+    agg.settlements = SETTLEMENTS.filter(s => inView(s.lon, s.lat));
+    for (const s of agg.settlements) {
+      for (const [y, t, n] of s.counts) addCount(y, t, n);
+      for (const [key, target] of [["ph", agg.flatPpsqm], ["uh", agg.flatPrice]])
+        for (const [y, bins] of Object.entries(s[key])) {
+          const h = target.get(+y) || new Map();
+          for (const [bin, n] of bins) h.set(bin, (h.get(bin) || 0) + n);
+          target.set(+y, h);
+        }
+    }
+  }
+  return agg;
+}
+
+// median of either a plain array (exact) or a Map(bin -> count) over log-spaced edges (interpolated in log space)
+function med(v, edges) {
+  if (!v) return null;
+  if (Array.isArray(v)) return v.length ? median(v) : null;
+  const total = [...v.values()].reduce((a, b) => a + b, 0);
+  if (!total) return null;
+  let acc = 0;
+  for (const bin of [...v.keys()].sort((a, b) => a - b)) {
+    const n = v.get(bin);
+    if (acc + n >= total / 2) {
+      const f = (total / 2 - acc) / n, lo = Math.log(edges[bin]), hi = Math.log(edges[bin + 1]);
+      return Math.exp(lo + f * (hi - lo));
+    }
+    acc += n;
+  }
+  return null;
+}
+const size = v => !v ? 0 : Array.isArray(v) ? v.length : [...v.values()].reduce((a, b) => a + b, 0);
+function merge(groups) {           // several years' values into one
+  const list = groups.filter(Boolean);
+  if (!list.length) return null;
+  if (Array.isArray(list[0])) return list.flat();
+  const m = new Map();
+  for (const h of list) for (const [bin, n] of h) m.set(bin, (m.get(bin) || 0) + n);
+  return m;
+}
+
+function renderStats(loadingOnly) {
+  if (!META) return;
+  const agg = aggregate();
+  if (loadingOnly && !agg.loading) return;
+  const years = [...agg.byYear.keys()].sort();
+  const lastYear = Math.max(...years, 0);
+  const recentYears = years.filter(y => y >= META.recent_from);
+  const recentPp = merge(recentYears.map(y => agg.flatPpsqm.get(y)));
+  const recentPr = merge(recentYears.map(y => agg.flatPrice.get(y)));
+  const nRecent = size(recentPp);
+  const pe = META.ppsqm_edges, ue = META.price_edges;
+
+  const scope = agg.mode === "exact"
+    ? `כל העסקאות שממוקמות באזור המוצג${agg.loading ? " (טוען…)" : ""}.`
+    : `${fmt.format(agg.settlements.length)} יישובים שמרכזם באזור המוצג. התקרבו לרמת רחוב לנתונים מדויקים לאזור.`;
+  if (!agg.total) { els.stats.innerHTML = `<p class="scope">${scope}</p><div class="empty">אין עסקאות באזור המוצג.</div>`; return; }
+
+  const tile = (label, value, sub) => `<div class="tile"><div class="label">${label}</div><div class="value">${value}</div>${sub ? `<div class="sub">${sub}</div>` : ""}</div>`;
+  const recentLbl = `דירות, ${META.recent_from}–${lastYear}`;
+  let html = `<p class="scope">${scope}</p><div class="tiles">
+    ${tile("עסקאות (כל הסוגים, כל השנים)", compact.format(agg.total), `${years[0]}–${lastYear}`)}
+    ${tile("עסקאות דירות", compact.format(nRecent), recentLbl)}
+    ${tile('מחיר חציוני למ"ר', nRecent >= 5 ? moneyC(med(recentPp, pe)) : "—", recentLbl)}
+    ${tile("מחיר חציוני לדירה", nRecent >= 5 ? moneyC(med(recentPr, ue)) : "—", recentLbl)}
+  </div>`;
+
+  const allYears = []; for (let y = years[0]; y <= lastYear; y++) allYears.push(y);
+  html += `<h3>עסקאות לפי שנה</h3><p class="cap">כל סוגי העסקאות${lastYear >= new Date().getFullYear() ? `. ${lastYear} חלקית` : ""}</p>`
+    + barChart(allYears.map(y => ({ x: y, v: agg.byYear.get(y) || 0 })), lastYear);
+  const ppSeries = allYears.map(y => { const v = agg.flatPpsqm.get(y); return { x: y, v: size(v) >= 5 ? med(v, pe) : null, n: size(v) }; });
+  html += `<h3>מחיר חציוני למ"ר, דירות</h3><p class="cap">מחירים נומינליים. שנים עם פחות מ-5 עסקאות מושמטות</p>` + lineChart(ppSeries);
+
+  const types = [...agg.byType.entries()].sort((a, b) => b[1] - a[1]);
+  const top = types.slice(0, 6), rest = types.slice(6).reduce((a, [, n]) => a + n, 0);
+  const rows = top.map(([t, n]) => [META.types[t], n]).concat(rest ? [["אחר", rest]] : []);
+  const maxN = Math.max(...rows.map(r => r[1]));
+  html += `<h3>סוגי עסקאות</h3><p class="cap">כל השנים</p>` + rows.map(([name, n]) =>
+    `<div class="hbar"><span class="name" title="${esc(name)}">${esc(name)}</span><span class="track"><div class="fill" style="width:${100 * n / maxN}%"></div></span><span class="val">${fmt.format(n)}</span></div>`).join("");
+
+  if (agg.settlements && agg.settlements.length > 1) {
+    const list = [...agg.settlements].sort((a, b) => b.n - a.n).slice(0, 15);
+    html += `<h3>יישובים באזור</h3><p class="cap">15 היישובים עם הכי הרבה עסקאות. מחיר למ"ר: דירות מ-${META.color_from}</p>
+      <table><thead><tr><th>יישוב</th><th>עסקאות</th><th>למ"ר</th></tr></thead><tbody>${list.map(s =>
+      `<tr><td>${esc(s.name)}</td><td class="num">${fmt.format(s.n)}</td><td class="num">${money(s.ppsqm)}</td></tr>`).join("")}</tbody></table>`;
+  }
+  els.stats.innerHTML = html;
+  bindTips();
+}
+
+// small SVG charts: one series each, recessive axes, hover tooltip per year
+const W = 440, H = 150, PAD = { l: 44, r: 8, t: 8, b: 20 };
+function axes(xs, maxV, fmtY) {
+  const ticks = [0, maxV / 2, maxV];
+  const y = v => PAD.t + (H - PAD.t - PAD.b) * (1 - v / maxV);
+  const step = Math.ceil(xs.length / 7);
+  return ticks.map(t => `<line class="grid" x1="${PAD.l}" x2="${W - PAD.r}" y1="${y(t)}" y2="${y(t)}"/><text x="${PAD.l - 6}" y="${y(t) + 3}" text-anchor="end">${fmtY(t)}</text>`).join("")
+    + xs.map((x, i) => (i % step === 0 || i === xs.length - 1) && (i === xs.length - 1 || xs.length - 1 - i >= step / 2)
+      ? `<text x="${xScale(xs.length)(i)}" y="${H - 5}" text-anchor="middle">${x}</text>` : "").join("");
+}
+const xScale = n => i => PAD.l + (W - PAD.l - PAD.r) * (i + 0.5) / n;
+function barChart(points, partialYear) {
+  const max = niceMax(Math.max(...points.map(p => p.v), 1)), n = points.length, x = xScale(n);
+  const bw = Math.max(2, (W - PAD.l - PAD.r) / n - 2), y = v => PAD.t + (H - PAD.t - PAD.b) * (1 - v / max), base = H - PAD.b;
+  const bars = points.map((p, i) => {
+    const h = base - y(p.v), r = Math.min(4, bw / 2, h);
+    const tip = `${p.x}${p.x === partialYear && partialYear >= new Date().getFullYear() ? " (חלקית)" : ""}: ${fmt.format(p.v)} עסקאות`;
+    return (p.v ? `<path d="M${x(i) - bw / 2},${base}V${y(p.v) + r}q0,-${r} ${r},-${r}h${bw - 2 * r}q${r},0 ${r},${r}V${base}Z" fill="var(--bar)" opacity="${p.x === partialYear && partialYear >= new Date().getFullYear() ? 0.45 : 1}"/>` : "")
+      + `<rect x="${x(i) - (W - PAD.l - PAD.r) / n / 2}" y="${PAD.t}" width="${(W - PAD.l - PAD.r) / n}" height="${base - PAD.t}" fill="transparent" data-tip="${esc(tip)}"/>`;
+  }).join("");
+  return `<div class="chart"><svg viewBox="0 0 ${W} ${H}" role="img">${axes(points.map(p => p.x), max, compact.format)}${bars}</svg><div class="tip"></div></div>`;
+}
+function lineChart(points) {
+  const vals = points.filter(p => p.v != null);
+  if (!vals.length) return '<p class="cap">אין מספיק עסקאות דירות באזור.</p>';
+  const max = niceMax(Math.max(...vals.map(p => p.v))), n = points.length, x = xScale(n);
+  const y = v => PAD.t + (H - PAD.t - PAD.b) * (1 - v / max);
+  let d = "", prev = false;
+  points.forEach((p, i) => { if (p.v == null) { prev = false; return; } d += `${prev ? "L" : "M"}${x(i)},${y(p.v)}`; prev = true; });
+  const dots = points.map((p, i) => p.v == null ? "" : `<circle cx="${x(i)}" cy="${y(p.v)}" r="2.5" fill="var(--bar)"/>`).join("");
+  const hits = points.map((p, i) => `<rect x="${x(i) - (W - PAD.l - PAD.r) / n / 2}" y="${PAD.t}" width="${(W - PAD.l - PAD.r) / n}" height="${H - PAD.b - PAD.t}" fill="transparent" data-tip="${esc(p.v == null ? `${p.x}: פחות מ-5 עסקאות` : `${p.x}: ${money(p.v)} למ"ר (${fmt.format(p.n)} עסקאות)`)}"/>`).join("");
+  return `<div class="chart"><svg viewBox="0 0 ${W} ${H}" role="img">${axes(points.map(p => p.x), max, v => "₪" + compact.format(v))}<path d="${d}" fill="none" stroke="var(--bar)" stroke-width="2"/>${dots}${hits}</svg><div class="tip"></div></div>`;
+}
+function niceMax(v) { const m = 10 ** Math.floor(Math.log10(v)); return [1, 2, 2.5, 5, 10].map(s => s * m).find(s => s >= v); }
+function bindTips() {
+  els.stats.querySelectorAll(".chart").forEach(ch => {
+    const tip = ch.querySelector(".tip");
+    ch.querySelectorAll("[data-tip]").forEach(r => {
+      r.addEventListener("mouseenter", () => {
+        const box = r.getBoundingClientRect(), host = ch.getBoundingClientRect();
+        tip.textContent = r.dataset.tip; tip.style.display = "block";
+        tip.style.left = `${box.left - host.left + box.width / 2}px`; tip.style.top = `${box.top - host.top + 12}px`;
+        r.setAttribute("fill", "rgba(0,0,0,.05)");
+      });
+      r.addEventListener("mouseleave", () => { tip.style.display = "none"; r.setAttribute("fill", "transparent"); });
+    });
+  });
+}
 </script>
 </body>
 </html>

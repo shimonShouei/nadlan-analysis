@@ -22,6 +22,17 @@ The export has one row per (gush, chelka, address). `status` is `ok`, `no_addres
 exists but has no address, e.g. open land) or `parcel_not_found` (the parcel isn't in the current
 cadastre, usually because it was re-parcelled). Join to deals on `gush, chelka`.
 
+## Map site
+A static map of all deals in Israel: click a building to see its deals, or open the stats tab for the area in view.
+Rebuild the data after the crawl, then preview locally:
+
+```
+uv run python scripts/fetch_parcel_addresses.py --blocks    # fallback location per gush (~12k lookups)
+uv run python -I scripts/match_buildings.py                 # needs data/osm/israel-and-palestine-latest.osm.pbf (Geofabrik)
+uv run python -I scripts/build_site_data.py                 # writes site/data/
+uv run python -m http.server --directory site               # open http://localhost:8000
+```
+
 ## Run
 The notebook reads `~/Downloads/taxes-nadlan-full-f41fb496_append.csv` by default. Set `NADLAN_CSV`
 to use another path. The first run takes about 1 minute to parse; later runs load from the cache.

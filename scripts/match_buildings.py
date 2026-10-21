@@ -1,71 +1,80 @@
-"""Prototype: match scraped parcel points to OpenStreetMap building outlines for one city.
+"""Match scraped parcel points to OpenStreetMap building outlines, for all of Israel.
 
 Inputs
-  data/parcel_addresses.sqlite   parcel label points (EPSG:3857), from fetch_parcel_addresses.py
-  data/deals.parquet             deals (gush, chelka, settlement)
-  data/osm/<city>_buildings.json Overpass `way["building"]; out geom;` result
-Output
-  data/<city>_parcel_building.parquet  one row per parcel: the building its point falls in (or the nearest one)
+  data/parcel_addresses.sqlite                     parcel label points (EPSG:3857), from fetch_parcel_addresses.py
+  data/osm/israel-and-palestine-latest.osm.pbf     https://download.geofabrik.de/asia/israel-and-palestine-latest.osm.pbf
+Outputs
+  data/parcel_building.parquet   one row per parcel: the building its point falls in (or the nearest one)
+  data/buildings.parquet         the buildings that received a parcel, outline as WKB (EPSG:3857)
 
-Usage: python -I scripts/match_buildings.py [--city tlv]
+Only buildings near some parcel point are kept from the .pbf, so memory stays small.
+
+Usage: python -I scripts/match_buildings.py
 """
-import argparse
-import json
 import sqlite3
 from pathlib import Path
 
 import numpy as np
+import osmium
 import pandas as pd
 import shapely
 from shapely import STRtree
 from shapely.geometry import Polygon
 
 ROOT = Path(__file__).resolve().parent.parent
+PBF = ROOT / "data/osm/israel-and-palestine-latest.osm.pbf"
 R = 6378137.0
-CITIES = {"tlv": "תל אביב-יפו"}
 NEAREST_M = 15          # a parcel point not inside any building is matched to one this close (metres)
 NEAR_RADIUS_M = 30      # buildings within this distance count as "other buildings that could be on the parcel"
-MERC = 1 / np.cos(np.radians(32.07))    # metres -> EPSG:3857 units at Tel Aviv's latitude
+MERC = 1 / np.cos(np.radians(31.8))     # metres -> EPSG:3857 units at Israel's latitude
+CELL = 50 * MERC                        # pre-filter grid (EPSG:3857 units)
 
 
 def to_mercator(lon, lat):
     return np.radians(lon) * R, np.log(np.tan(np.pi / 4 + np.radians(lat) / 2)) * R
 
 
-def load_buildings(path):
-    elements = json.loads(Path(path).read_text(encoding="utf-8"))["elements"]
+def load_parcels():
+    con = sqlite3.connect(f"file:{ROOT / 'data/parcel_addresses.sqlite'}?mode=ro", uri=True)
+    return pd.read_sql("SELECT gush, chelka, x, y FROM parcels WHERE objectid IS NOT NULL", con)
+
+
+def load_buildings(parcels):
+    """Building outlines from the .pbf whose bounding box comes within ~50 m of a parcel point."""
+    cx, cy = np.floor(parcels["x"] / CELL).astype(int), np.floor(parcels["y"] / CELL).astype(int)
+    wanted = {(a + i, b + j) for a, b in zip(cx, cy) for i in (-1, 0, 1) for j in (-1, 0, 1)}
+
     rows = []
-    for el in elements:
-        geom = el.get("geometry") or []
-        if len(geom) < 4:
+    fp = osmium.FileProcessor(str(PBF)).with_areas().with_filter(osmium.filter.KeyFilter("building"))
+    for obj in fp:
+        if not obj.is_area():
             continue
-        x, y = to_mercator(np.array([g["lon"] for g in geom]), np.array([g["lat"] for g in geom]))
-        poly = Polygon(zip(x, y))
-        if not poly.is_valid:
-            poly = poly.buffer(0)
-        if poly.is_empty or poly.geom_type != "Polygon":
-            continue
-        tags = el.get("tags", {})
-        rows.append({"building_id": el["id"], "geometry": poly, "btype": tags.get("building"),
-                     "street": tags.get("addr:street"), "housenumber": tags.get("addr:housenumber"),
-                     "levels": tags.get("building:levels")})
-    return pd.DataFrame(rows)
+        for ring in obj.outer_rings():          # multipolygon buildings: one row per outer ring
+            lon = np.fromiter((n.lon for n in ring), float)
+            lat = np.fromiter((n.lat for n in ring), float)
+            if len(lon) < 4:
+                continue
+            x, y = to_mercator(lon, lat)
+            x0, x1 = int(x.min() // CELL), int(x.max() // CELL)
+            y0, y1 = int(y.min() // CELL), int(y.max() // CELL)
+            if (x1 - x0 + 1) * (y1 - y0 + 1) > 400 or not any(
+                    (i, j) in wanted for i in range(x0, x1 + 1) for j in range(y0, y1 + 1)):
+                continue                        # >400 cells: 1 km+ footprints (bases, industrial zones)
+            poly = Polygon(zip(x, y))
+            if not poly.is_valid:
+                poly = poly.buffer(0)
+            if poly.is_empty or poly.geom_type != "Polygon":
+                continue
+            rows.append({"building_id": obj.orig_id(), "geometry": poly, "btype": obj.tags.get("building")})
+    return pd.DataFrame(rows).drop_duplicates("building_id").reset_index(drop=True)
 
 
-def main(city):
-    buildings = load_buildings(ROOT / f"data/osm/{city}_buildings.json")
-    print(f"{len(buildings):,} buildings, {buildings['street'].notna().mean():.0%} with an OSM street address")
+def main():
+    parcels = load_parcels()
+    print(f"{len(parcels):,} located parcels")
+    buildings = load_buildings(parcels)
+    print(f"{len(buildings):,} OSM buildings near a parcel point")
     tree = STRtree(buildings["geometry"].values)
-
-    con = sqlite3.connect(ROOT / "data/parcel_addresses.sqlite")
-    parcels = pd.read_sql("SELECT gush, chelka, status, x, y FROM parcels WHERE objectid IS NOT NULL", con)
-    deals = pd.read_parquet(ROOT / "data/deals.parquet", columns=["gush", "chelka", "settlement"])
-    deals["settlement"] = deals["settlement"].str.replace(r"\s*-\s*", "-", regex=True).str.strip()
-    city_parcels = deals.loc[deals["settlement"] == CITIES[city], ["gush", "chelka"]].drop_duplicates()
-    parcels = parcels.merge(city_parcels, on=["gush", "chelka"])
-    n_deals = deals[deals["settlement"] == CITIES[city]].merge(parcels[["gush", "chelka"]]).shape[0]
-    print(f"{len(parcels):,} scraped parcels with deals in {city} ({n_deals:,} deals)")
-
     pts = shapely.points(parcels["x"].values, parcels["y"].values)
 
     # 1. point inside a building
@@ -89,25 +98,21 @@ def main(city):
     parcels["n_buildings_near"] = np.bincount(pn, minlength=len(parcels))
 
     matched = parcels["building_idx"].notna()
-    parcels["building_id"] = np.where(matched, buildings["building_id"].reindex(parcels["building_idx"].fillna(0).astype(int)).values, 0)
-    parcels.loc[~matched, "building_id"] = np.nan
+    parcels["building_id"] = pd.array([pd.NA] * len(parcels), dtype="Int64")
+    parcels.loc[matched, "building_id"] = buildings["building_id"].values[parcels.loc[matched, "building_idx"].astype(int)]
 
     print("\nHow parcel points match buildings:")
     print((parcels["how"].value_counts(normalize=True) * 100).round(1).to_string())
     per_building = parcels[matched].groupby("building_id").size()
     print(f"\nParcels per matched building: {per_building.describe()[['mean', '50%', 'max']].round(1).to_dict()}; "
           f"{(per_building > 1).mean():.0%} of matched buildings receive deals from 2+ parcels")
-    print("Other buildings within %d m of a parcel point (ambiguity proxy):" % NEAR_RADIUS_M)
-    print(parcels["n_buildings_near"].describe(percentiles=[.25, .5, .75, .9]).round(1).to_string())
-    print(f"\nDeal-weighted share matched: "
-          f"{deals.merge(parcels.loc[matched, ['gush', 'chelka']]).shape[0] / n_deals:.1%}")
 
-    out = parcels.drop(columns=["building_idx"])
-    out.to_parquet(ROOT / f"data/{city}_parcel_building.parquet", index=False)
-    buildings.drop(columns="geometry").to_parquet(ROOT / f"data/{city}_buildings_meta.parquet", index=False)
+    parcels.drop(columns=["building_idx"]).to_parquet(ROOT / "data/parcel_building.parquet", index=False)
+    used = buildings[buildings["building_id"].isin(per_building.index)].copy()
+    used["geometry"] = shapely.to_wkb(used["geometry"].values)
+    used.to_parquet(ROOT / "data/buildings.parquet", index=False)
+    print(f"{len(used):,} buildings with parcels -> data/buildings.parquet")
 
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--city", default="tlv", choices=CITIES)
-    main(ap.parse_args().city)
+    main()

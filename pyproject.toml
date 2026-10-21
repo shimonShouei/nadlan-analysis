@@ -10,6 +10,7 @@ dependencies = [
     "matplotlib>=3.9",
     "nbconvert>=7.17.2",
     "nbformat>=5.11.1",
+    "osmium>=4.3.2",
     "pandas>=2.2",
     "pyarrow>=26.0.0",
     "python-bidi>=0.6.11",

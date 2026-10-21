@@ -56,14 +56,37 @@ uv run jupyter lab analysis.ipynb                          # interactive
   text itself (reordering again reverses it), and uses python-bidi `get_display` on older versions.
   Font is Arial for Hebrew glyphs on Windows.
 
-## Map site prototype (Tel Aviv)
+## Map site (all of Israel)
 
-Goal: a public map where every building with deals is clickable and lists its deals (block-level fallback when a parcel is ambiguous).
+Goal: a public map where every building with deals is clickable and lists its deals, plus a stats tab for the area in view.
 Static site, no backend; preview with `python -m http.server --directory site`, then open `http://localhost:8000`.
 
-- `scripts/fetch_parcel_addresses.py` (GovMap scrape, resumable, writes `data/parcel_addresses.sqlite`) gives one label point per parcel (EPSG:3857) plus addresses.
-- `scripts/match_buildings.py` assigns each parcel point to an OpenStreetMap building (inside, else nearest within 15 m). Needs `data/osm/<city>_buildings.json` from an Overpass `way["building"]; out geom;` query (send a User-Agent or Overpass returns 406).
-- `scripts/build_site_data.py` (run without `-I`, it imports `match_buildings`) writes `site/data/` (git-ignored): `buildings.geojson`, `parcels.geojson` (unmatched parcels), `deals/<gush>.json` (loaded on click).
-- `site/index.html`: MapLibre GL + OpenFreeMap tiles, Hebrew RTL UI. Colours buildings by median price per m² of flats; the median uses `unit_price` (see Partial shares above).
-- Deals attach to parcels, not buildings, so a click shows the parcel's deals; a building can hold several parcels, and a parcel several buildings. The panel says so and offers the whole block.
-- The `suspect` flag in `build_site_data.py` duplicates the notebook's plausibility tests (minus the local-outlier test). Factor into a shared module before this grows.
+Pipeline (each step reads the previous one's output; `data/` and `site/data/` are git-ignored):
+1. `scripts/fetch_parcel_addresses.py` (GovMap scrape, resumable) -> `data/parcel_addresses.sqlite`: one label point
+   per parcel (EPSG:3857) plus addresses. `--blocks` -> `data/blocks.sqlite`, one point per gush (separate file because the
+   parcel crawl holds its db's write lock for a whole batch).
+2. `scripts/match_buildings.py` -> `data/parcel_building.parquet`, `data/buildings.parquet`. Reads the Geofabrik
+   `data/osm/israel-and-palestine-latest.osm.pbf`, keeps only buildings near a parcel point, matches each point to the
+   building it is inside, else the nearest within 15 m.
+3. `scripts/build_site_data.py` -> `site/data/`: `meta.json`, `settlements.json`, `grid.geojson`, `cells/<cx>_<cy>.json` (0.02° squares:
+   buildings, points), `stats/<cx>_<cy>.json` (per-point deal summaries), `deals/<gush>.json` (loaded on click). Peak memory ~1 GB by design
+   (the user's machine is short on RAM): avoid full-table merges of the deals frame.
+
+Deal locations: parcel point if GovMap knows the parcel; otherwise the block point (parcel re-parcelled since the deal),
+shown as a hollow violet circle; otherwise the deal counts only at settlement level.
+
+`site/index.html`: MapLibre GL + OpenFreeMap tiles, Hebrew RTL UI. Needs the `mapbox-gl-rtl-text` plugin, or map labels
+render reversed. Below zoom 14 it shows price squares (`grid.geojson`: 1 km below z10, 500 m to z12, 250 m to z14,
+each the median price per m² of flats since `COLOR_FROM`, drawn only with >= 3 such flats); from 14 it loads the grid
+cells in view. `settlements.json` is no longer drawn; it feeds only the zoomed-out stats.
+- Performance: the GeoJSON sources hold only the cells in view (each `setData` re-tiles everything it gets), source
+  `maxzoom` is 15, stats summaries live in separate `stats/` files fetched only while the stats tab is open, and the
+  basemap's `building-3d` layer is removed. Keep it that way; it was 2-6 s per pan before.
+- Colour: median price per m² of flats sold since `COLOR_FROM` (2020); thresholds are national quantiles written to `meta.json`.
+  The median uses `unit_price` (see Partial shares above).
+- Stats tab: zoomed in, exact from the cells' per-point summaries inside the view; zoomed out, from settlements in view,
+  with medians from summed log-spaced histograms (~4% resolution). "Recent" = `RECENT_FROM` (2024+).
+- Deals attach to parcels, not buildings, so a click shows the parcel's deals; a building can hold several parcels, and a
+  parcel several buildings. The panel says so and offers the whole block.
+- The `suspect` flag in `build_site_data.py` duplicates the notebook's plausibility tests (minus the local-outlier test).
+  Factor into a shared module before this grows.

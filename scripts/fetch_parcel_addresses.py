@@ -9,6 +9,9 @@ at any time; finished parcels are skipped. Parcels are processed in order of dea
 
 Usage:
   python scripts/fetch_parcel_addresses.py [--limit N] [--workers 4]
+  python scripts/fetch_parcel_addresses.py --blocks   # one point per gush (fallback location for
+                                                       # deals whose parcel is not in today's cadastre),
+                                                       # writes data/blocks.sqlite
   python scripts/fetch_parcel_addresses.py --export   # write data/parcel_addresses.parquet
 """
 import argparse
@@ -24,6 +27,7 @@ import requests
 ROOT = Path(__file__).resolve().parent.parent
 DEALS = ROOT / "data/deals.parquet"
 DB = ROOT / "data/parcel_addresses.sqlite"
+BLOCKS_DB = ROOT / "data/blocks.sqlite"
 OUT = ROOT / "data/parcel_addresses.parquet"
 API = "https://www.govmap.gov.il/api"
 BATCH = 2000
@@ -68,6 +72,18 @@ def lookup(gush, chelka):
     return ("ok" if addrs else "no_address"), objectid, x, y, addrs
 
 
+def lookup_block(gush):
+    """Return (status, x, y) for a gush's label point."""
+    label = f"גוש {gush}"
+    res = call("POST", f"{API}/search-service/autocomplete",
+               json={"searchText": label, "language": "he", "isAccurate": False, "maxResults": 5})
+    hit = next((r for r in res.get("results", []) if r["type"] == "block" and r["text"] == label), None)
+    if hit is None:
+        return "block_not_found", None, None
+    x, y = map(float, hit["shape"][len("POINT("):-1].split())
+    return "ok", x, y
+
+
 def init_db(con):
     con.executescript("""
         CREATE TABLE IF NOT EXISTS parcels (
@@ -77,6 +93,29 @@ def init_db(con):
             gush INTEGER, chelka INTEGER, street TEXT, house_num INTEGER, city TEXT,
             settlement_code INTEGER, street_code INTEGER, address_objectid INTEGER);
     """)
+
+
+def fetch_blocks(workers):
+    con = sqlite3.connect(BLOCKS_DB)     # own file: the parcel crawl holds its db's write lock for a whole batch
+    con.execute("CREATE TABLE IF NOT EXISTS blocks (gush INTEGER PRIMARY KEY, status TEXT, x REAL, y REAL)")
+    gushes = set(pd.read_parquet(DEALS, columns=["gush"])["gush"].unique().tolist())
+    gushes -= set(pd.read_sql("SELECT gush FROM blocks", con)["gush"])
+    print(f"{len(gushes):,} blocks to fetch")
+    failed = 0
+    with ThreadPoolExecutor(workers) as pool:
+        futures = {pool.submit(lookup_block, int(g)): int(g) for g in sorted(gushes)}
+        for i, fut in enumerate(as_completed(futures), 1):
+            try:
+                con.execute("INSERT OR REPLACE INTO blocks VALUES (?,?,?,?)", (futures[fut], *fut.result()))
+            except Exception as e:
+                failed += 1
+                print(f"failed {futures[fut]}: {e}")
+            if i % 1000 == 0:
+                con.commit()
+                print(f"{i:,}/{len(futures):,}")
+    con.commit()
+    print(f"done, {failed} failed")
+    print(pd.read_sql("SELECT status, COUNT(*) n FROM blocks GROUP BY status", con).to_string(index=False))
 
 
 def fetch(limit, workers):
@@ -137,5 +176,11 @@ if __name__ == "__main__":
     ap.add_argument("--limit", type=int)
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--export", action="store_true")
+    ap.add_argument("--blocks", action="store_true")
     args = ap.parse_args()
-    export() if args.export else fetch(args.limit, args.workers)
+    if args.export:
+        export()
+    elif args.blocks:
+        fetch_blocks(args.workers)
+    else:
+        fetch(args.limit, args.workers)
