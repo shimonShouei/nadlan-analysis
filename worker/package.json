@@ -1,0 +1,5 @@
+{
+  "name": "nadlan-search-worker",
+  "private": true,
+  "type": "module"
+}
