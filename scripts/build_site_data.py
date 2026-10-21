@@ -8,6 +8,8 @@ Writes site/data/meta.json             deal types, colour thresholds, list of gr
        site/data/cells/<cx>_<cy>.json  one CELL x CELL degree square: buildings and parcel/block points (drawn when zoomed in)
        site/data/stats/<cx>_<cy>.json  the same square's per-point deal summaries, loaded only for the stats tab
        site/data/deals/<gush>.json     all deals of one block, loaded on click
+       site/data/street_index.json settlement name -> streets/<id>.json
+       site/data/streets/<id>.json [street, lon, lat, parcel count], fetched when a search names that settlement
 
 Where a deal sits on the map: its parcel's point when GovMap knows the parcel, otherwise its block's point
 (the parcel was re-parcelled since the deal). Deals on neither count only in the settlement totals.
@@ -26,6 +28,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import shapely
+
+from street_index import clean_street, group_streets, street_file_id
 
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "site" / "data"
@@ -133,6 +137,57 @@ def split_rows(df, by, cols):
     return {keys[s]: rows[s:e] for s, e in zip(starts, ends)}
 
 
+def write_street_index(deals, parcels):
+    """One small JSON per settlement: median parcel point of each street.
+
+    Keyed by the deal's settlement name (the same strings as settlements.json),
+    not the GovMap city, so search resolution and the index agree. Freed before
+    the building geometries are built. Skipped, rather than failing the map, if
+    the address table is missing.
+    """
+    db = ROOT / "data/parcel_addresses.sqlite"
+    if not db.exists():
+        log("street index skipped (no parcel_addresses.sqlite)")
+        return None
+    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    try:
+        raw = pd.read_sql("SELECT gush, chelka, street FROM addresses WHERE street IS NOT NULL AND street != ''", con)
+    except sqlite3.Error as err:
+        log(f"street index skipped: {err}")
+        return None
+    if raw.empty:
+        return None
+    raw["key"] = pkey(raw["gush"], raw["chelka"])
+    raw["street"] = raw["street"].map(clean_street)
+    raw = raw[raw["street"] != ""]
+    loc = parcels.drop_duplicates("key").set_index("key")[["lon", "lat"]]
+    raw = raw.join(loc, on="key").dropna(subset=["lon"])
+    keys = pd.Index(raw["key"].unique())
+    sub = deals.loc[deals["key"].isin(keys), ["key", "settlement"]].dropna()
+    if sub.empty:
+        return None
+    mode = (sub.groupby(["key", "settlement"], observed=True).size().reset_index(name="n")
+            .sort_values(["key", "n"], ascending=[True, False])
+            .drop_duplicates("key"))
+    raw["settlement"] = raw["key"].map(mode.set_index("key")["settlement"])
+    raw = raw.dropna(subset=["settlement"])
+    grouped = group_streets(zip(
+        raw["settlement"].astype(str), raw["street"].astype(str),
+        raw["lon"].tolist(), raw["lat"].tolist()))
+    del raw, sub, mode
+    if not grouped:
+        return None
+    (OUT / "streets").mkdir(parents=True, exist_ok=True)
+    index = {}
+    for name, rows in grouped.items():
+        rel = f"streets/{street_file_id(name)}.json"
+        dump(OUT / rel, rows)
+        index[name] = rel
+    dump(OUT / "street_index.json", index)
+    log(f"{len(index):,} settlements with streets, {sum(len(v) for v in grouped.values()):,} streets")
+    return "street_index.json"
+
+
 def weighted_ppsqm(g):
     """Deal-weighted mean of parcel medians, per group (building or point)."""
     w = g["n_color"].fillna(0).where(g["ppsqm"].notna(), 0)
@@ -165,6 +220,7 @@ def main():
         shutil.rmtree(OUT)
     for sub in ["cells", "stats", "deals"]:
         (OUT / sub).mkdir(parents=True)
+    street_index = write_street_index(deals, parcels)
     cells = defaultdict(lambda: {"b": [], "p": [], "s": []})
 
     def addr_lists(g):
@@ -212,15 +268,23 @@ def main():
     del pts, pprops
 
     # ---- per-location deal summaries for the stats tab: counts by (year, type) and the plausible flats
-    located = deals.loc[deals["loc_id"].notna(), ["loc_id", "year", "type_idx", "flat_ok", "unit_k", "asset_area"]]
+    located = deals.loc[deals["loc_id"].notna(), ["loc_id", "year", "type_idx", "flat_ok", "unit_k", "asset_area", "room_num"]]
     counts = located.groupby(["loc_id", "year", "type_idx"]).size().rename("n").reset_index()
     by_loc_counts = split_rows(counts, "loc_id", ["year", "type_idx", "n"])
     fl = located[located["flat_ok"]].assign(a=lambda f: f["asset_area"].round().astype(int), k=lambda f: f["unit_k"].astype(int))
-    by_loc_flats = split_rows(fl, "loc_id", ["year", "k", "a"])
+    fl["r"] = fl["room_num"].round(1)
+    by_loc_flats = split_rows(fl, "loc_id", ["year", "k", "a", "r"])
     loc = parcels.drop_duplicates("loc_id").set_index("loc_id")
     for loc_id, rows in by_loc_counts.items():
         r = loc.loc[loc_id]
-        cells[r["cell"]]["s"].append([round(r["lon"], 5), round(r["lat"], 5), rows, by_loc_flats.get(loc_id, [])])
+        flats = []
+        for y, k, area, rooms in by_loc_flats.get(loc_id, []):
+            if isinstance(rooms, float) and np.isnan(rooms):
+                rooms = None
+            elif rooms is not None:
+                rooms = float(rooms)
+            flats.append([int(y), int(k), int(area), rooms])
+        cells[r["cell"]]["s"].append([round(r["lon"], 5), round(r["lat"], 5), rows, flats])
     for key, c in cells.items():
         if c["b"] or c["p"]:
             dump(OUT / "cells" / f"{key}.json", {"b": {"type": "FeatureCollection", "features": c["b"]},
@@ -293,7 +357,9 @@ def main():
     dump(OUT / "meta.json", {"types": types, "apt_types": APT_TYPES, "cell": CELL, "color_from": COLOR_FROM,
                              "recent_from": RECENT_FROM, "thresholds": THRESHOLDS, "grid_m": GRID_M, "grid_min_flats": GRID_MIN_FLATS, "cells": sorted(k for k, c in cells.items() if c["b"] or c["p"]),
                              "stat_cells": sorted(k for k, c in cells.items() if c["s"]),
-                             "ppsqm_edges": np.round(PPSQM_EDGES).tolist(), "price_edges": np.round(PRICE_EDGES).tolist()})
+                             "ppsqm_edges": np.round(PPSQM_EDGES).tolist(), "price_edges": np.round(PRICE_EDGES).tolist(),
+                             "street_index": street_index,
+                             "flat_tuple": ["year", "price_k", "area_m2", "rooms"]})
     size = sum(p.stat().st_size for p in OUT.rglob("*") if p.is_file()) / 1e6
     log(f"done: {size:.0f} MB in site/data")
 

@@ -5,7 +5,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this is
 
 A single exploratory-analysis notebook over Israel Tax Authority real-estate deals (~3.8M rows, 1998–2026,
-from over.org.il). No package code, no tests. Python 3.12, managed with `uv`.
+from over.org.il). No package. Python 3.12, managed with `uv`. The map search has unit tests
+(`node --test tests/query.test.mjs tests/worker.test.mjs` and `python -m unittest tests/test_street_index.py`).
 
 ## Commands
 
@@ -90,3 +91,14 @@ cells in view. `settlements.json` is no longer drawn; it feeds only the zoomed-o
   parcel several buildings. The panel says so and offers the whole block.
 - The `suspect` flag in `build_site_data.py` duplicates the notebook's plausibility tests (minus the local-outlier test).
   Factor into a shared module before this grows.
+
+### Natural-language search
+
+`site/query.js` is the schema, the validator, the Hebrew/English text parser, and the ranking helper. `site/search.js` wires the box. `site/config.json` holds `worker_url` (empty in git). Tiers: Chrome Prompt API when `LanguageModel.availability()` is `"available"`; else `POST /parse` on the Worker in `worker/` if a URL is set; else the text parser. The Worker (see `worker/README.md`) keeps `GEMINI_API_KEY` as a secret, rate-limits per IP in the isolate (8/minute, plus a 30/minute isolate cap), and validates with the same `validateQuery`. Unknown JSON fields are dropped. The model must not supply prices or a winning place; `rankSettlements` reads `ppsqm` or the `ph`/`uh` histograms.
+
+Filters land on the open stats tab and on the deal table of a selected parcel. Price filters use whole-unit price (`paid / portion`, or `price_k * 1000` in the cell flats), not the share paid. Map colours are not refiltered. Cells in view are still the only GeoJSON given to the map; a street match sets `qhit` on those features so other buildings fade. Street files are fetched per settlement on search, not during pan.
+
+`build_site_data.py` adds two things, both inside the existing memory budget (the street pass is freed before building geometries):
+
+- Flat rows in `stats/` are `[year, price_k, area_m2, rooms]`. `rooms` is null when unknown. Older files with 3-tuples still load; the room filter then applies only to the deal list, and the panel says the area summary ignored it.
+- `street_index.json` maps a deal settlement name to `streets/<sha>.json` (`[street, lon, lat, n]`). Streets come from the address table's `street` column (not the concatenated "street house" label), located at the median parcel point, and named with the settlement string from the deals so it matches `settlements.json`. A published `site/data` built before this change has no index until `build_site_data.py` is run again.

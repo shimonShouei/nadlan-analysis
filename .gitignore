@@ -3,3 +3,6 @@ data/
 __pycache__/
 .ipynb_checkpoints/
 site/data/
+worker/.wrangler/
+worker/node_modules/
+worker/.dev.vars
