@@ -18,9 +18,13 @@ uv run python scripts/fetch_parcel_addresses.py            # fetch (or --limit N
 uv run python scripts/fetch_parcel_addresses.py --export   # -> data/parcel_addresses.parquet
 ```
 
-The export has one row per (gush, chelka, address). `status` is `ok`, `no_address` (the parcel
-exists but has no address, e.g. open land) or `parcel_not_found` (the parcel isn't in the current
-cadastre, usually because it was re-parcelled). Join to deals on `gush, chelka`.
+The export has one row per (gush, chelka, address), with the parcel's label point as `lon`/`lat`
+(and `x`/`y` in EPSG:3857). `status` is `ok`, `no_address` (the parcel exists but has no address,
+e.g. open land) or `parcel_not_found` (the parcel isn't in the current cadastre, usually because it
+was re-parcelled). Join to deals on `gush, chelka`. `data/blocks.parquet` has one point per gush.
+
+The October 2026 crawl is published as a release, so you don't need to re-crawl:
+[data-2026-10](https://github.com/shimonShouei/nadlan-analysis/releases/tag/data-2026-10).
 
 ## Map site
 A static map of all deals in Israel: click a building to see its deals, or open the stats tab for the area in view.

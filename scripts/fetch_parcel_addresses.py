@@ -12,7 +12,7 @@ Usage:
   python scripts/fetch_parcel_addresses.py --blocks   # one point per gush (fallback location for
                                                        # deals whose parcel is not in today's cadastre),
                                                        # writes data/blocks.sqlite
-  python scripts/fetch_parcel_addresses.py --export   # write data/parcel_addresses.parquet
+  python scripts/fetch_parcel_addresses.py --export   # write data/parcel_addresses.parquet and data/blocks.parquet
 """
 import argparse
 import sqlite3
@@ -21,6 +21,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import requests
 
@@ -29,6 +30,7 @@ DEALS = ROOT / "data/deals.parquet"
 DB = ROOT / "data/parcel_addresses.sqlite"
 BLOCKS_DB = ROOT / "data/blocks.sqlite"
 OUT = ROOT / "data/parcel_addresses.parquet"
+BLOCKS_OUT = ROOT / "data/blocks.parquet"
 API = "https://www.govmap.gov.il/api"
 BATCH = 2000
 HEADERS = {"User-Agent": "Mozilla/5.0", "Referer": "https://www.govmap.gov.il/"}
@@ -160,15 +162,28 @@ def fetch(limit, workers):
     print(pd.read_sql("SELECT status, COUNT(*) n FROM parcels GROUP BY status", con).to_string(index=False))
 
 
+def to_lonlat(x, y):
+    r = 6378137.0
+    return np.degrees(x / r), np.degrees(2 * np.arctan(np.exp(y / r)) - np.pi / 2)
+
+
 def export():
-    con = sqlite3.connect(DB)
+    """Write the crawl results as Parquet: one row per (parcel, address), and one row per block."""
+    con = sqlite3.connect(f"file:{DB}?mode=ro", uri=True)
     df = pd.read_sql("""
         SELECT p.gush, p.chelka, p.status, p.x, p.y,
                a.street, a.house_num, a.city, a.settlement_code, a.street_code
         FROM parcels p LEFT JOIN addresses a USING (gush, chelka)
         ORDER BY p.gush, p.chelka, a.street, a.house_num""", con)
+    df = df.astype({"house_num": "Int32", "settlement_code": "Int32", "street_code": "Int32"})
+    df["lon"], df["lat"] = to_lonlat(df["x"], df["y"])
     df.to_parquet(OUT, index=False)
     print(f"{len(df):,} rows ({df[['gush', 'chelka']].drop_duplicates().shape[0]:,} parcels) -> {OUT}")
+    if BLOCKS_DB.exists():
+        b = pd.read_sql("SELECT gush, status, x, y FROM blocks ORDER BY gush", sqlite3.connect(BLOCKS_DB))
+        b["lon"], b["lat"] = to_lonlat(b["x"], b["y"])
+        b.to_parquet(BLOCKS_OUT, index=False)
+        print(f"{len(b):,} blocks -> {BLOCKS_OUT}")
 
 
 if __name__ == "__main__":
