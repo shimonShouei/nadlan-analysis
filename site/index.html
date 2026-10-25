@@ -77,12 +77,35 @@
   .hbar .fill { height: 10px; background: var(--bar); border-radius: 0 4px 4px 0; min-width: 2px; }
   .hbar .val { font-variant-numeric: tabular-nums; color: var(--ink2); }
   #stats table { font-size: 12px; }
+  tr.pick { cursor: pointer; } tr.pick:hover { background: var(--chip); }
 
+  #search { top: 12px; left: 320px; right: 220px; padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; max-height: min(70vh, 560px); overflow: auto; }
+  body.has-panel #search { right: calc(min(480px, 100vw - 24px) + 24px); }
+  #search-form { display: flex; gap: 6px; }
+  #search-q { flex: 1; min-width: 0; border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; font: inherit; background: var(--bg); color: var(--ink); }
+  #search-form button, #search-examples .example, #search-out .rank { border: 1px solid var(--line); background: var(--bg); color: var(--accent); border-radius: 8px; padding: 7px 10px; font: inherit; font-weight: 600; cursor: pointer; }
+  #search-clear { color: var(--ink2); font-weight: 500; }
+  #search-status, .search-note { margin: 0; font-size: 12px; color: var(--ink2); }
+  .search-warn { margin: 0; font-size: 12px; color: var(--warn); }
+  #search-examples { display: flex; flex-wrap: wrap; gap: 4px; }
+  #search-examples .example, #search-out .rank { font-weight: 400; text-align: right; color: var(--ink); background: var(--chip); }
+  #search-out { overflow: auto; display: flex; flex-direction: column; gap: 4px; }
+  #search-out .chips { margin: 0; }
+  #search-out:empty, #search-examples:empty { display: none; }
+
+  @media (max-width: 960px) {
+    #search, body.has-panel #search { left: 8px; top: 8px; max-height: 140px; }
+    #search { right: 8px; }
+    #legend { top: 156px; }
+    body.has-panel #legend { display: none; }
+  }
   @media (max-width: 640px) {
     #side { top: auto; left: 8px; right: 8px; bottom: 8px; width: auto; height: 62vh; }
     #legend { top: 8px; left: 8px; padding: 6px 8px; }
     #legend .row { font-size: 11px; }
     #open-stats { top: 8px; right: 8px; }
+    #search { top: 52px; left: 8px; right: 8px; max-height: 220px; }
+    body.has-panel #search { right: 8px; max-height: 148px; }
     body.has-panel #legend { display: none; }
     th, td { padding: 5px 4px; font-size: 12px; }
     .tag { white-space: normal; max-width: 120px; }
@@ -99,6 +122,19 @@
   <div class="row" id="lg-zoomed-out">כל ריבוע: חציון האזור. התקרבו כדי לראות בניינים</div>
   <div class="row lg-zoomed-in"><span class="dot" style="background:#e34948;border:1.5px solid #fff"></span>חלקה ללא בניין במפה</div>
   <div class="row lg-zoomed-in"><span class="dot" style="background:#fff;border:2.5px solid #4a3aa7"></span>מיקום לפי גוש בלבד</div>
+</div>
+
+<div id="search" class="panel">
+  <form id="search-form" role="search">
+    <input id="search-q" type="search" autocomplete="off" enterkeyhint="search"
+      placeholder="דירות, יישוב, חדרים, מחיר למ&quot;ר, שנה…"
+      aria-label="חיפוש חופשי בעסקאות">
+    <button type="submit">חיפוש</button>
+    <button type="button" id="search-clear" hidden>ניקוי</button>
+  </form>
+  <p id="search-status" class="search-status"></p>
+  <div id="search-examples"></div>
+  <div id="search-out"></div>
 </div>
 
 <button id="open-stats" class="panel">סטטיסטיקה לאזור המוצג</button>
@@ -139,6 +175,11 @@ const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;",
 const k = v => v >= 1000 ? Math.round(v / 1000) + "K" : String(v);
 
 let META, SETTLEMENTS, APT_TYPES, APT_IDX;
+let activeQuery = null;   // validated search filters; null means the map is unfiltered
+let streetNeedle = "";     // official street name to highlight, empty if the query has no resolved street
+let viewHook = null;
+let resolveReady = () => {};
+const readyPromise = new Promise(res => { resolveReady = res; });
 // Two kinds of per-cell files: "cells" (buildings and points, drawn) and "stats" (deal summaries, stats tab only)
 const store = { cells: { data: new Map(), pending: new Map(), keys: null },
                 stats: { data: new Map(), pending: new Map(), keys: null } };
@@ -161,6 +202,7 @@ map.on("load", async () => {
   APT_IDX = new Set(META.types.map((t, i) => APT_TYPES.has(t) ? i : -1).filter(i => i >= 0));
   store.cells.keys = new Set(META.cells);
   store.stats.keys = new Set(META.stat_cells);
+  resolveReady();
 
   const th = META.thresholds, cols = COLORS.slice(0, th.length + 1);
   const labels = cols.map((_, i) => i === 0 ? `עד ${k(th[0])}` : i === th.length ? `מעל ${k(th[i - 1])}` : `${k(th[i - 1])}–${k(th[i])}`);
@@ -182,15 +224,16 @@ map.on("load", async () => {
     minzoom: gridZooms[m][0], maxzoom: gridZooms[m][1],
     paint: { "fill-color": colorExpr, "fill-opacity": 0.78, "fill-outline-color": "rgba(255,255,255,0.25)" } }, firstLabel);
   map.addLayer({ id: "b-fill", type: "fill", source: "buildings", minzoom: DETAIL_ZOOM,
-    paint: { "fill-color": colorExpr, "fill-opacity": 0.85 } });
+    paint: { "fill-color": colorExpr, "fill-opacity": ["case", ["==", ["get", "qhit"], 0], 0.15, 0.85] } });
   map.addLayer({ id: "b-line", type: "line", source: "buildings", minzoom: DETAIL_ZOOM,
     paint: { "line-color": "#00000055", "line-width": 0.6 } });
   map.addLayer({ id: "b-selected", type: "line", source: "buildings", minzoom: DETAIL_ZOOM, filter: ["==", ["get", "id"], -1],
     paint: { "line-color": "#1d4ed8", "line-width": 3 } });
+  const hitOpacity = ["case", ["==", ["get", "qhit"], 0], 0.25, 1];
   map.addLayer({ id: "p-dots", type: "circle", source: "points", minzoom: 14, filter: ["!", ["get", "block"]],
-    paint: { "circle-color": "#e34948", "circle-radius": 5, "circle-stroke-color": "#fff", "circle-stroke-width": 1.5 } });
+    paint: { "circle-color": "#e34948", "circle-radius": 5, "circle-stroke-color": "#fff", "circle-stroke-width": 1.5, "circle-opacity": hitOpacity, "circle-stroke-opacity": hitOpacity } });
   map.addLayer({ id: "p-blocks", type: "circle", source: "points", minzoom: DETAIL_ZOOM, filter: ["get", "block"],
-    paint: { "circle-color": "#fff", "circle-radius": 7, "circle-stroke-color": "#4a3aa7", "circle-stroke-width": 2.5 } });
+    paint: { "circle-color": "#fff", "circle-radius": 7, "circle-stroke-color": "#4a3aa7", "circle-stroke-width": 2.5, "circle-opacity": hitOpacity, "circle-stroke-opacity": hitOpacity } });
   const gridLayers = META.grid_m.map(m => `grid-${m}`);
   const tip = new maplibregl.Popup({ closeButton: false, closeOnClick: false, className: "grid-tip", offset: 8 });
   for (const l of gridLayers) {
@@ -239,8 +282,17 @@ async function showCells() {
   if (key === shownKey || keys.join(",") !== cellsInView("cells").join(",")) return;   // unchanged, or view moved on
   shownKey = key;
   const shown = keys.map(k => store.cells.data.get(k).d);
-  map.getSource("buildings").setData({ type: "FeatureCollection", features: shown.flatMap(c => c.b.features) });
-  map.getSource("points").setData({ type: "FeatureCollection", features: shown.flatMap(c => c.p.features) });
+  const mark = features => {
+    if (!streetNeedle || !window.NadlanQuery) return features;
+    return features.map(f => {
+      let list = f.properties.addresses || [];
+      if (typeof list === "string") { try { list = JSON.parse(list); } catch { list = []; } }
+      const hit = Array.isArray(list) && list.some(a => window.NadlanQuery.addressOnStreet(a, streetNeedle));
+      return { ...f, properties: { ...f.properties, qhit: hit ? 1 : 0 } };
+    });
+  };
+  map.getSource("buildings").setData({ type: "FeatureCollection", features: mark(shown.flatMap(c => c.b.features)) });
+  map.getSource("points").setData({ type: "FeatureCollection", features: mark(shown.flatMap(c => c.p.features)) });
 }
 
 let moveTimer;
@@ -254,6 +306,7 @@ function onMove() {
     if (map.getZoom() >= DETAIL_ZOOM) jobs.push(showCells());
     if (statsOpen()) jobs.push(updateStats());
     await Promise.all(jobs);
+    if (viewHook && activeQuery) viewHook();
   }, 250);
 }
 async function updateStats() {
@@ -310,6 +363,7 @@ async function select(feature) {
   map.setFilter("b-selected", ["==", ["get", "id"], isBuilding ? p.id : -1]);
   current = { parcels, addresses, isBuilding, isBlock, exact: p.exact === true || p.exact === "true" };
   blockMode = false;
+  els["toggle-block"].hidden = false;
   els["tab-detail"].disabled = false;
   showTab("detail");
   els.title.textContent = isBlock ? `גוש ${parcels[0].split("/")[0]}`
@@ -330,25 +384,31 @@ async function renderDetail() {
   // derived fields: the paid amount is for the share sold, so the whole-unit price divides by the share
   const enrich = d => { const unit = d.p ? d.paid / d.p : null; return { ...d, unit, ppsqm: unit && d.a ? unit / d.a : null }; };
   const rowsAll = shown.map(enrich).sort((a, b) => b.d.localeCompare(a.d));
-  const good = rowsAll.filter(d => !d.s && d.ppsqm && APT_TYPES.has(d.t));
+  const rows = activeQuery && window.NadlanQuery
+    ? rowsAll.filter(d => window.NadlanQuery.dealPasses(d, activeQuery, META.apt_types))
+    : rowsAll;
+  const good = rows.filter(d => !d.s && d.ppsqm && APT_TYPES.has(d.t));
   const showChelka = blockMode || isBlock;
 
   els.chips.innerHTML = [
-    `<span class="chip">${fmt.format(rowsAll.length)} עסקאות</span>`,
+    `<span class="chip">${fmt.format(rows.length)} עסקאות${rows.length !== rowsAll.length ? ` מתוך ${fmt.format(rowsAll.length)}` : ""}</span>`,
     good.length ? `<span class="chip">חציון ${money(median(good.map(d => d.ppsqm)))} למ"ר</span>` : "",
     blockMode || isBlock ? "" : `<span class="chip">${parcels.map(s => "חלקה " + s).slice(0, 3).join(" · ")}${parcels.length > 3 ? " …" : ""}</span>`,
     isBlock ? '<span class="chip warn">מיקום לפי גוש</span>' : "",
     isBuilding && !exact ? '<span class="chip warn">מיקום משוער</span>' : "",
     !isBlock && parcels.length > 1 ? `<span class="chip warn">${parcels.length} חלקות</span>` : "",
   ].join("");
-  els.note.textContent = blockMode ? "כל העסקאות בגוש."
+  const streetNote = streetNeedle && current.addresses && window.NadlanQuery
+    && !current.addresses.some(a => window.NadlanQuery.addressOnStreet(a, streetNeedle))
+    ? "הבניין לא על הרחוב שבחיפוש. " : "";
+  els.note.textContent = streetNote + (blockMode ? "כל העסקאות בגוש."
     : isBlock ? `עסקאות ב-${parcels.length} חלקות שאינן קיימות היום במפת הקדסטר (כנראה אוחדו או חולקו מחדש). המיקום הוא מרכז הגוש.`
     : "העסקאות משויכות לפי גוש וחלקה. אם בחלקה כמה בניינים, מוצגות עסקאות כולם."
-      + (isBuilding && !exact ? " נקודת החלקה נמצאת ליד הבניין ולא בתוכו." : "");
+      + (isBuilding && !exact ? " נקודת החלקה נמצאת ליד הבניין ולא בתוכו." : ""));
   els["toggle-block"].textContent = blockMode ? "חזרה" : "הצג את כל הגוש";
 
   const LIMIT = 300;
-  const body = rowsAll.slice(0, LIMIT).map(d => {
+  const body = rows.slice(0, LIMIT).map(d => {
     const tags = [d.p && d.p < 1 ? `שולם ${money(d.paid)} עבור ${Math.round(d.p * 100)}%` : "", d.s ? "נתון חשוד" : ""].filter(Boolean);
     return `<tr class="${d.s ? "suspect" : ""}">
       <td class="num">${d.d.split("-").reverse().join("/")}</td>
@@ -359,14 +419,34 @@ async function renderDetail() {
       <td class="num">${money(d.unit ?? d.paid)}${tags.length ? `<div class="tag">${tags.join(" · ")}</div>` : ""}</td>
       <td class="num">${money(d.ppsqm)}</td></tr>`;
   }).join("");
-  els.deals.innerHTML = rowsAll.length
+  els.deals.innerHTML = rows.length
     ? `<table><thead><tr><th>תאריך</th>${showChelka ? "<th>חלקה</th>" : ""}<th>סוג</th><th>חדרים</th><th>מ"ר</th><th>מחיר</th><th>למ"ר</th></tr></thead><tbody>${body}</tbody></table>`
-      + (rowsAll.length > LIMIT ? `<div class="more">מוצגות ${LIMIT} העסקאות האחרונות מתוך ${fmt.format(rowsAll.length)}</div>` : "")
-    : '<div class="empty">לא נמצאו עסקאות.</div>';
+      + (rows.length > LIMIT ? `<div class="more">מוצגות ${LIMIT} העסקאות האחרונות מתוך ${fmt.format(rows.length)}</div>` : "")
+    : '<div class="empty">לא נמצאו עסקאות שעונות על הסינון.</div>';
 }
 els["toggle-block"].addEventListener("click", async () => { blockMode = !blockMode; await renderDetail(); });
 
 // ---------- stats tab
+function countOk(year, typeIdx) {
+  if (!activeQuery || !window.NadlanQuery) return true;
+  return window.NadlanQuery.countPasses(year, typeIdx, activeQuery, META.types, META.apt_types);
+}
+function flatOk(flat) {
+  if (!activeQuery || !window.NadlanQuery) return true;
+  return window.NadlanQuery.flatPasses(flat, activeQuery, { rooms: roomsObserved() });
+}
+function roomsObserved() {
+  for (const cell of store.stats.data.values()) {
+    for (const loc of cell.d || []) {
+      const flats = loc[3];
+      if (flats && flats.length) return flats[0].length >= 4;
+    }
+  }
+  return false;
+}
+function searchContext() {
+  return { zoomedIn: map.getZoom() >= DETAIL_ZOOM, roomsInAreaStats: map.getZoom() >= DETAIL_ZOOM && roomsObserved() };
+}
 // Zoomed in: exact, from the per-point deal summaries of the loaded cells inside the view.
 // Zoomed out: from the settlements whose point is in view; medians come from summed histograms (to within ~4%).
 function aggregate() {
@@ -385,11 +465,13 @@ function aggregate() {
       if (!c) { agg.loading = true; continue; }
       for (const [lon, lat, counts, flats] of c.d) {
         if (!inView(lon, lat)) continue;
-        for (const [y, t, n] of counts) addCount(y, t, n);
-        for (const [y, kPrice, a] of flats) {
-          const price = kPrice * 1000;
+        for (const [y, t, n] of counts) if (countOk(y, t)) addCount(y, t, n);
+        for (const flat of flats) {
+          if (!flatOk(flat)) continue;
+          const price = flat[1] * 1000;
+          const y = flat[0];
           if (!agg.flatPpsqm.has(y)) { agg.flatPpsqm.set(y, []); agg.flatPrice.set(y, []); }
-          agg.flatPpsqm.get(y).push(price / a);
+          agg.flatPpsqm.get(y).push(price / flat[2]);
           agg.flatPrice.get(y).push(price);
         }
       }
@@ -398,13 +480,21 @@ function aggregate() {
     agg.mode = "hist";
     agg.settlements = SETTLEMENTS.filter(s => inView(s.lon, s.lat));
     for (const s of agg.settlements) {
-      for (const [y, t, n] of s.counts) addCount(y, t, n);
-      for (const [key, target] of [["ph", agg.flatPpsqm], ["uh", agg.flatPrice]])
-        for (const [y, bins] of Object.entries(s[key])) {
+      for (const [y, t, n] of s.counts) if (countOk(y, t)) addCount(y, t, n);
+      for (const [key, target] of [["ph", agg.flatPpsqm], ["uh", agg.flatPrice]]) {
+        const edges = key === "ph" ? META.ppsqm_edges : META.price_edges;
+        const min = !activeQuery ? null : key === "ph" ? activeQuery.ppsqm_min : activeQuery.price_min;
+        const max = !activeQuery ? null : key === "ph" ? activeQuery.ppsqm_max : activeQuery.price_max;
+        for (const [y, bins] of Object.entries(s[key] || {})) {
+          if (activeQuery && window.NadlanQuery && !window.NadlanQuery.yearOk(+y, activeQuery)) continue;
           const h = target.get(+y) || new Map();
-          for (const [bin, n] of bins) h.set(bin, (h.get(bin) || 0) + n);
-          target.set(+y, h);
+          for (const [bin, n] of bins) {
+            if (activeQuery && window.NadlanQuery && !window.NadlanQuery.histBinOk(bin, edges, min, max)) continue;
+            h.set(bin, (h.get(bin) || 0) + n);
+          }
+          if (h.size) target.set(+y, h);
         }
+      }
     }
   }
   return agg;
@@ -443,21 +533,30 @@ function renderStats(loadingOnly) {
   if (loadingOnly && !agg.loading) return;
   const years = [...agg.byYear.keys()].sort();
   const lastYear = Math.max(...years, 0);
-  const recentYears = years.filter(y => y >= META.recent_from);
+  const yearFiltered = activeQuery && (activeQuery.year_min != null || activeQuery.year_max != null);
+  const recentYears = years.filter(y => yearFiltered ? true : y >= META.recent_from);
   const recentPp = merge(recentYears.map(y => agg.flatPpsqm.get(y)));
   const recentPr = merge(recentYears.map(y => agg.flatPrice.get(y)));
   const nRecent = size(recentPp);
   const pe = META.ppsqm_edges, ue = META.price_edges;
 
-  const scope = agg.mode === "exact"
+  const filterLine = activeQuery && window.NadlanQuery ? window.NadlanQuery.statsLine(activeQuery, searchContext()) : "";
+  const scope = (agg.mode === "exact"
     ? `כל העסקאות שממוקמות באזור המוצג${agg.loading ? " (טוען…)" : ""}.`
-    : `${fmt.format(agg.settlements.length)} יישובים שמרכזם באזור המוצג. התקרבו לרמת רחוב לנתונים מדויקים לאזור.`;
+    : `${fmt.format(agg.settlements.length)} יישובים שמרכזם באזור המוצג. התקרבו לרמת רחוב לנתונים מדויקים לאזור.`)
+    + (filterLine ? " " + filterLine : "");
   if (!agg.total) { els.stats.innerHTML = `<p class="scope">${scope}</p><div class="empty">אין עסקאות באזור המוצג.</div>`; return; }
 
   const tile = (label, value, sub) => `<div class="tile"><div class="label">${label}</div><div class="value">${value}</div>${sub ? `<div class="sub">${sub}</div>` : ""}</div>`;
-  const recentLbl = `דירות, ${META.recent_from}–${lastYear}`;
+  const caveat = [];
+  if (activeQuery && (activeQuery.rooms_min != null || activeQuery.rooms_max != null)) caveat.push("חדרים");
+  if (activeQuery && [activeQuery.price_min, activeQuery.price_max, activeQuery.ppsqm_min, activeQuery.ppsqm_max, activeQuery.area_min, activeQuery.area_max].some(v => v != null)) caveat.push("מחיר ושטח");
+  const countSub = [`${years[0]}–${lastYear}`, caveat.length ? `בלי סינון ${caveat.join(" ו")}` : ""].filter(Boolean).join(" · ");
+  const focusFrom = recentYears[0] ?? (yearFiltered ? activeQuery.year_min : META.recent_from);
+  const focusTo = recentYears[recentYears.length - 1] ?? lastYear;
+  const recentLbl = yearFiltered ? `דירות, ${focusFrom}–${focusTo}` : `דירות, ${META.recent_from}–${lastYear}`;
   let html = `<p class="scope">${scope}</p><div class="tiles">
-    ${tile("עסקאות (כל הסוגים, כל השנים)", compact.format(agg.total), `${years[0]}–${lastYear}`)}
+    ${tile("עסקאות (כל הסוגים, כל השנים)", compact.format(agg.total), countSub)}
     ${tile("עסקאות דירות", compact.format(nRecent), recentLbl)}
     ${tile('מחיר חציוני למ"ר', nRecent >= 5 ? moneyC(med(recentPp, pe)) : "—", recentLbl)}
     ${tile("מחיר חציוני לדירה", nRecent >= 5 ? moneyC(med(recentPr, ue)) : "—", recentLbl)}
@@ -520,6 +619,147 @@ function lineChart(points) {
   return `<div class="chart"><svg viewBox="0 0 ${W} ${H}" role="img">${axes(points.map(p => p.x), max, v => "₪" + compact.format(v))}<path d="${d}" fill="none" stroke="var(--bar)" stroke-width="2"/>${dots}${hits}</svg><div class="tip"></div></div>`;
 }
 function niceMax(v) { const m = 10 ** Math.floor(Math.log10(v)); return [1, 2, 2.5, 5, 10].map(s => s * m).find(s => s >= v); }
+function applySearchQuery(query, extra = {}) {
+  activeQuery = query;
+  streetNeedle = extra.street || "";
+  shownKey = "";
+  if (!query) {
+    if (map.getZoom() >= DETAIL_ZOOM) showCells();
+    if (statsOpen()) updateStats();
+    if (current) renderDetail();
+    return;
+  }
+  if (map.getZoom() >= DETAIL_ZOOM) showCells();
+  if (current) renderDetail();
+  showTab("stats");
+}
+
+// Example deals for the search box: flats passing the active filters, newest first, taken from the stats
+// cells around a centre (a settlement's centre, or the matched street). Addresses come from the cell's points.
+async function findExamples(lon, lat, radius, limit = 25) {
+  const q = activeQuery;
+  if (!q || !window.NadlanQuery) return [];
+  const c = META.cell, keyOf = (x, y) => `${Math.floor(x / c)}_${Math.floor(y / c)}`;
+  const keys = [];
+  for (let x = Math.floor((lon - radius) / c); x <= Math.floor((lon + radius) / c); x++)
+    for (let y = Math.floor((lat - radius) / c); y <= Math.floor((lat + radius) / c); y++)
+      if (store.stats.keys.has(`${x}_${y}`)) keys.push(`${x}_${y}`);
+  await fetchCells("stats", keys);
+  const caps = { rooms: true };
+  const cand = [];
+  for (const key of keys) {
+    for (const [plon, plat, , flats] of store.stats.data.get(key)?.d || []) {
+      if (Math.abs(plon - lon) > radius || Math.abs(plat - lat) > radius) continue;
+      let best = null;
+      for (const flat of flats) {
+        if (flat.length < 4 && (q.rooms_min != null || q.rooms_max != null)) continue;
+        if (!window.NadlanQuery.flatPasses(flat, q, caps)) continue;
+        if (!best || flat[0] > best[0]) best = flat;
+      }
+      if (best) cand.push({ lon: plon, lat: plat, flat: best });
+    }
+  }
+  cand.sort((a, b) => b.flat[0] - a.flat[0]);
+  const cellKeys = [...new Set(cand.slice(0, streetNeedle ? 400 : limit * 3).map(x => keyOf(x.lon, x.lat)))];
+  await fetchCells("cells", cellKeys.filter(k => store.cells.keys.has(k)));
+  const propsAt = new Map();
+  for (const k of cellKeys) for (const f of store.cells.data.get(k)?.d.p.features || []) {
+    const [x, y] = f.geometry.coordinates;
+    propsAt.set(`${x.toFixed(5)},${y.toFixed(5)}`, f.properties);
+  }
+  const blds = cellKeys.flatMap(k => store.cells.data.get(k)?.d.b.features || []).map(f => {
+    const ring = f.geometry.coordinates[0], xs = ring.map(r => r[0]), ys = ring.map(r => r[1]);
+    return { f, x0: Math.min(...xs), x1: Math.max(...xs), y0: Math.min(...ys), y1: Math.max(...ys) };
+  });
+  const list = v => typeof v === "string" ? (() => { try { return JSON.parse(v); } catch { return []; } })() : (v || []);
+  const out = [];
+  for (const x of cand) {
+    let props = propsAt.get(`${x.lon.toFixed(5)},${x.lat.toFixed(5)}`);
+    if (!props) props = blds.find(b => x.lon >= b.x0 - 2e-5 && x.lon <= b.x1 + 2e-5 && x.lat >= b.y0 - 2e-5 && x.lat <= b.y1 + 2e-5)?.f.properties;
+    const addrs = list(props?.addresses), parcels = list(props?.parcels);
+    if (streetNeedle && !addrs.some(a => window.NadlanQuery.addressOnStreet(a, streetNeedle))) continue;
+    if (!parcels.length) continue;
+    const onStreet = streetNeedle ? addrs.find(a => window.NadlanQuery.addressOnStreet(a, streetNeedle)) : null;
+    out.push({ lon: x.lon, lat: x.lat, address: onStreet || addrs[0] || "", parcels });
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
+// Search results in the deals tab: the newest deals that pass the active filters, from the example buildings.
+async function showResults(places, title) {
+  if (!activeQuery || !places) return;
+  current = null;
+  els["tab-detail"].disabled = false;
+  showTab("detail");
+  els["toggle-block"].hidden = true;
+  els.title.textContent = title || "תוצאות החיפוש";
+  els.deals.innerHTML = '<div class="empty">טוען…</div>';
+  const rows = [];
+  for (const pl of places) {
+    const before = rows.length;
+    const gushes = [...new Set(pl.parcels.map(s => s.split("/")[0]))];
+    const mine = new Set(pl.parcels);
+    for (const g of gushes) {
+      for (const d of await loadBlock(g)) {
+        if (!mine.has(`${g}/${d.c}`)) continue;
+        const unit = d.p ? d.paid / d.p : null;
+        const e = { ...d, gush: g, unit, ppsqm: unit && d.a ? unit / d.a : null, address: pl.address, lon: pl.lon, lat: pl.lat };
+        if (!e.s && window.NadlanQuery.dealPasses(e, activeQuery, META.apt_types)) rows.push(e);
+      }
+    }
+    // newest three per building, so a few busy buildings do not fill the list
+    rows.splice(before, rows.length - before, ...rows.slice(before).sort((a, b) => b.d.localeCompare(a.d)).slice(0, 3));
+  }
+  rows.sort((a, b) => b.d.localeCompare(a.d));
+  const seen = new Set(), uniq = rows.filter(d => { const k = `${d.gush}/${d.c}/${d.d}/${d.paid}/${d.a}`; return !seen.has(k) && seen.add(k); });
+  const shown = uniq.slice(0, 60);
+  els.chips.innerHTML = `<span class="chip">${fmt.format(shown.length)} עסקאות אחרונות שעונות על החיפוש</span>`;
+  els.note.textContent = "דוגמאות מהבניינים באזור. הקליקו על שורה כדי לעבור לבניין.";
+  els.deals.innerHTML = shown.length
+    ? `<table><thead><tr><th>תאריך</th><th>כתובת</th><th>חדרים</th><th>מ"ר</th><th>מחיר</th><th>למ"ר</th></tr></thead><tbody>${shown.map((d, i) =>
+      `<tr class="pick" data-i="${i}"><td class="num">${d.d.split("-").reverse().join("/")}</td><td>${esc(d.address || "—")}</td><td class="num">${d.r ?? "—"}</td><td class="num">${d.a ?? "—"}</td><td class="num">${money(d.unit ?? d.paid)}</td><td class="num">${money(d.ppsqm)}</td></tr>`).join("")}</tbody></table>`
+    : '<div class="empty">לא נמצאו עסקאות שעונות על הסינון באזור.</div>';
+  els.deals.querySelectorAll(".pick").forEach(tr => tr.addEventListener("click", () => {
+    const d = shown[Number(tr.dataset.i)];
+    map.flyTo({ center: [d.lon, d.lat], zoom: 18, essential: true });
+  }));
+  return shown.length;
+}
+
+let streetIndexPromise = null;
+const streetFiles = new Map();
+async function loadStreets(name) {
+  if (!META?.street_index || !name) return { status: "missing", streets: [] };
+  if (!streetIndexPromise) {
+    streetIndexPromise = fetch("data/" + META.street_index).then(r => r.ok ? r.json() : null).catch(() => null);
+  }
+  const idx = await streetIndexPromise;
+  if (!idx) return { status: "missing", streets: [] };
+  const rel = idx[name];
+  if (!rel) return { status: "ready", streets: [] };
+  if (!streetFiles.has(name)) {
+    streetFiles.set(name, fetch("data/" + rel).then(r => r.ok ? r.json() : []).catch(() => []));
+  }
+  return { status: "ready", streets: await streetFiles.get(name) };
+}
+
+window.NadlanMap = {
+  whenReady: () => readyPromise,
+  getSettlements: () => SETTLEMENTS,
+  getMeta: () => META,
+  flyTo: (lon, lat, zoom) => map.flyTo({ center: [lon, lat], zoom, essential: true }),
+  setQuery: (query, extra) => applySearchQuery(query, extra),
+  clearQuery: () => applySearchQuery(null),
+  loadStreets,
+  findExamples,
+  getCenter: () => { const c = map.getCenter(); return { lon: c.lng, lat: c.lat }; },
+  showResults,
+  roomsInAreaStats: () => map.getZoom() >= DETAIL_ZOOM && roomsObserved(),
+  zoomedIn: () => map.getZoom() >= DETAIL_ZOOM,
+  onView: fn => { viewHook = fn; },
+};
+
 function bindTips() {
   els.stats.querySelectorAll(".chart").forEach(ch => {
     const tip = ch.querySelector(".tip");
@@ -535,5 +775,6 @@ function bindTips() {
   });
 }
 </script>
+<script type="module" src="search.js?v=8"></script>
 </body>
 </html>
