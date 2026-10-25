@@ -60,7 +60,8 @@ uv run jupyter lab analysis.ipynb                          # interactive
 ## Map site (all of Israel)
 
 Goal: a public map where every building with deals is clickable and lists its deals, plus a stats tab for the area in view.
-Static site, no backend; preview with `python -m http.server --directory site`, then open `http://localhost:8000`.
+Static site, no backend; preview with `python scripts/serve.py`, then open `http://localhost:8000` (same as `http.server` but sends
+`Cache-Control: no-store`, because the plain server lets browsers keep stale JS). Bump the `?v=` on `search.js`/`query.js` when publishing.
 
 Pipeline (each step reads the previous one's output; `data/` and `site/data/` are git-ignored):
 1. `scripts/fetch_parcel_addresses.py` (GovMap scrape, resumable) -> `data/parcel_addresses.sqlite`: one label point
@@ -97,6 +98,7 @@ cells in view. `settlements.json` is no longer drawn; it feeds only the zoomed-o
 `site/query.js` is the schema, the validator, the Hebrew/English text parser, and the ranking helper. `site/search.js` wires the box. `site/config.json` holds `worker_url` (empty in git). Tiers: Chrome Prompt API when `LanguageModel.availability()` is `"available"`; else `POST /parse` on the Worker in `worker/` if a URL is set; else the text parser. The Worker (see `worker/README.md`) keeps `GEMINI_API_KEY` as a secret, rate-limits per IP in the isolate (8/minute, plus a 30/minute isolate cap), and validates with the same `validateQuery`. Unknown JSON fields are dropped. The model must not supply prices or a winning place; `rankSettlements` reads `ppsqm` or the `ph`/`uh` histograms.
 
 Filters land on the open stats tab and on the deal table of a selected parcel. Price filters use whole-unit price (`paid / portion`, or `price_k * 1000` in the cell flats), not the share paid. Map colours are not refiltered. Cells in view are still the only GeoJSON given to the map; a street match sets `qhit` on those features so other buildings fade. Street files are fetched per settlement on search, not during pan.
+The street is taken from the parsed query, or guessed from the leftover words by consonant skeleton (`guessStreet`, so "rotshild" finds רוטשילד). Matching deals are listed in the deals tab (`showResults`, newest 3 per building, from `findExamples` over the stats cells near the place or street, or the map centre when no place is named). A street match zooms to 18.5.
 
 `build_site_data.py` adds two things, both inside the existing memory budget (the street pass is freed before building geometries):
 

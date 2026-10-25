@@ -323,9 +323,14 @@ function longestPrefixGram(query, name) {
   for (let len = Math.min(5, words.length); len >= 1; len--) {
     if (len === 1 && nameWords.length > 1) continue;
     for (let i = 0; i + len <= words.length; i++) {
-      const gram = words.slice(i, i + len).join(" ");
-      if (gram.length < 3) continue;
-      if ((name === gram || name.startsWith(gram + " ")) && gram.length > best.length) best = gram;
+      const ws = words.slice(i, i + len);
+      // "בתל אביב": the one-letter preposition sits on the first word
+      for (const first of [ws[0], PREFIX.has(ws[0][0]) && ws[0].length > 2 ? ws[0].slice(1) : null]) {
+        if (!first) continue;
+        const gram = [first, ...ws.slice(1)].join(" ");
+        if (gram.length < 3) continue;
+        if ((name === gram || name.startsWith(gram + " ")) && gram.length > best.length) best = gram;
+      }
     }
   }
   return best;
@@ -335,10 +340,11 @@ function matchScore(text, name) {
   const query = loose(text);
   const nn = loose(name);
   if (!nn) return 0;
-  if (boundedIncludes(query, nn)) return 10000 + nn.length;
+  // Longer matched text wins ("תל אביב" over the tiny settlement "תל"); a whole-name hit beats a prefix hit of equal length.
   const gram = longestPrefixGram(query, nn);
-  if (gram) return 1000 + gram.length;
-  return 0;
+  const whole = boundedIncludes(query, nn);
+  const len = Math.max(whole ? nn.length : 0, gram.length);
+  return len ? len * 10 + (whole ? 5 : 0) : 0;
 }
 
 export function resolveSettlement(text, settlements) {
@@ -380,6 +386,60 @@ export function resolveStreet(raw, streets) {
     if (!best || row.score > best.score || (row.score === best.score && row.n > best.n)) best = row;
   }
   return best ? { name: best.name, lon: best.lon, lat: best.lat, n: best.n } : null;
+}
+
+// Consonant skeleton shared by Hebrew and Latin spellings, so "rotshild" / "Rothschild" find רוטשילד.
+function skeleton(text) {
+  let t = String(text).toLowerCase();
+  if (/[א-ת]/.test(t)) {
+    const map = { ב: "B", ג: "G", ד: "D", ז: "Z", ח: "K", כ: "K", ך: "K", ק: "K", ט: "T", ת: "T", ל: "L", מ: "M", ם: "M",
+      נ: "N", ן: "N", ס: "S", ש: "S", פ: "P", ף: "P", צ: "Z", ץ: "Z", ר: "R" };
+    t = [...t].map(c => map[c] || "").join("");
+  } else {
+    t = t.replace(/sch|sh/g, "S").replace(/ch|kh/g, "K").replace(/th/g, "T").replace(/ph/g, "P").replace(/tz|ts/g, "Z")
+      .replace(/[ckq]/g, "K").replace(/h/g, "").replace(/v/g, "B").replace(/f/g, "P").replace(/x/g, "KS")
+      .replace(/[^a-zA-Z]/g, "").replace(/[aeiouyw]/g, "").toUpperCase().replace(/[a-z]/g, "");
+    t = t.replace(/s/gi, "S").replace(/z/gi, "Z");
+  }
+  return t.replace(/(.)\1+/g, "$1");
+}
+
+const GUESS_STOP = new Set(("חדרים חדר דירות דירה רחוב שדרות שד בשכונת שכונת אלף מיליון מתחת מעל מאז עד בין ליד באזור לפחות " +
+  "in at on near for the a an street st str avenue ave blvd boulevard rooms room bedroom bedrooms apartment apartments flat flats " +
+  "under over since below above from with deals deal price cheap cheapest between and or to until before after up million " +
+  "thousand k sold sale sales year years last recent new old than less more least most at about around בין ו עד לפני אחרי " +
+  "מיליון אלף שנת שנים שנה עסקאות עסקה למכירה נמכרו").split(" "));
+
+/**
+ * The text parser only sees a street after the word "רחוב"/"street". When the settlement is known and its street
+ * list is loaded, try the leftover words of the question against that list instead ("רוטשילד תל אביב 4 חדרים").
+ */
+export function guessStreet(text, settlement, streets) {
+  if (!text || !streets?.length) return null;
+  const drop = new Set();
+  const addWords = s => normalizeHe(s).split(" ").forEach(w => drop.add(w));
+  if (settlement) {
+    addWords(settlement);
+    const q = normalizeHe(text);
+    for (const [en, he] of ALIASES) if (normalizeHe(settlement).includes(he)) en.split(" ").forEach(w => drop.add(w));
+  }
+  const raw = normalizeHe(text).split(" ").filter(Boolean);
+  const tokens = raw.map(w => ({ w, keep: !/\d/.test(w) && !GUESS_STOP.has(w) && !drop.has(w) && !drop.has(w.replace(/^[בלמהש]/, "")) }));
+  const table = streets.map(rec => ({ rec, sk: skeleton(rec[0]), plain: loose(rec[0]) }));
+  for (let len = 3; len >= 1; len--) {
+    for (let i = 0; i + len <= tokens.length; i++) {
+      const part = tokens.slice(i, i + len);
+      if (!part.every(t => t.keep)) continue;
+      const gram = part.map(t => t.w).join(" ");
+      for (const variant of [gram, gram.replace(/^[בלמהש]/, "")]) {
+        const sk = skeleton(variant);
+        if (sk.length < 3) continue;
+        const hit = table.filter(t => t.plain === loose(variant) || t.sk === sk).sort((a, b) => (b.rec[3] || 0) - (a.rec[3] || 0))[0];
+        if (hit) return hit.rec[0];
+      }
+    }
+  }
+  return null;
 }
 
 export function addressOnStreet(address, street) {
@@ -482,25 +542,29 @@ export function parseHeuristic(text, settlements, opts = {}) {
     if (exact && atLeast && !roomsRange) { /* min already set; don't pin max */ }
   }
 
-  const betweenYears = src.match(/בין(?:\s*השנים|\s*שנת)?\s*(19\d{2}|20\d{2})\s*(?:ל-?|עד\s*|ו-?)\s*(19\d{2}|20\d{2})/);
-  if (betweenYears) {
-    q.year_min = Number(betweenYears[1]);
-    q.year_max = Number(betweenYears[2]);
+  const Y = String.raw`(19\d{2}|20\d{2})`;
+  const yearHits = [];
+  const rangeYears = src.match(new RegExp(String.raw`(?:בין(?:\s*השנים|\s*שנת)?|between|from|מ-?|משנת)?\s*${Y}\s*(?:ל-?|עד(?:\s*שנת)?|ו-?|and|to|until|[-–—])\s*${Y}`, "i"));
+  if (rangeYears && Number(rangeYears[1]) <= Number(rangeYears[2])) {
+    yearHits.push(rangeYears);
+    q.year_min = Number(rangeYears[1]);
+    q.year_max = Number(rangeYears[2]);
   } else {
-    const since = src.match(/(?:מאז|משנת|החל\s*מ-?|מ-|since|from|after)\s*(19\d{2}|20\d{2})/i);
-    const until = src.match(/(?:עד(?:\s*שנת)?|לפני|until|before)\s*(19\d{2}|20\d{2})/i);
-    if (since) q.year_min = Number(since[1]);
-    if (until) q.year_max = Number(until[1]);
+    const since = src.match(new RegExp(String.raw`(?:מאז|משנת|החל\s*מ-?\s*(?:שנת\s*)?|מ\s*-?\s*|since|from|after|starting(?:\s+in)?)\s*${Y}`, "i"))
+      || src.match(new RegExp(String.raw`${Y}\s*(?:ואילך|והלאה|ואחריה|and\s+(?:later|after)|onwards?|\+)`, "i"));
+    const until = src.match(new RegExp(String.raw`(?:עד(?:\s*שנת)?|לפני|until|before|up\s+to)\s*${Y}`, "i"));
+    if (since) { q.year_min = Number(since[1]); yearHits.push(since); }
+    if (until) { q.year_max = Number(until[1]); yearHits.push(until); }
     if (!since && !until) {
-      const during = src.match(/(?:בשנת|ב-|in)\s*(19\d{2}|20\d{2})/i);
-      if (during) { q.year_min = Number(during[1]); q.year_max = q.year_min; }
+      const during = src.match(new RegExp(String.raw`(?:בשנת|ב-|in)\s*${Y}`, "i"));
+      if (during) { q.year_min = Number(during[1]); q.year_max = q.year_min; yearHits.push(during); }
     }
   }
 
   const consumed = [];
   const mark = (start, end) => consumed.push([start, end]);
   const overlap = (start, end) => consumed.some(([a, b]) => start < b && end > a);
-  if (betweenYears) mark(betweenYears.index, betweenYears.index + betweenYears[0].length);
+  for (const m of yearHits) mark(m.index, m.index + m[0].length);
   for (const re of [/מאז\s*(?:19|20)\d{2}/g, /משנת\s*(?:19|20)\d{2}/g, /עד(?:\s*שנת)?\s*(?:19|20)\d{2}/g, /since\s*(?:19|20)\d{2}/gi, /from\s*(?:19|20)\d{2}/gi]) {
     for (const m of src.matchAll(re)) mark(m.index, m.index + m[0].length);
   }

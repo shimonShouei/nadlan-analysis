@@ -201,3 +201,27 @@ test("system prompt carries the Hebrew examples and the live settlement list", (
   assert.match(prompt, /דירת גג/);
   assert.match(prompt, /תל אביב-יפו/);
 });
+
+test("guessStreet finds a street from leftover words, in Hebrew or Latin spelling", async () => {
+  const { guessStreet } = await import("../site/query.js");
+  const streets = [["רוטשילד", 1, 2, 161], ["בן יהודה", 1, 2, 90], ["דיזנגוף", 1, 2, 80]];
+  assert.equal(guessStreet("rotshild tel aviv 4 rooms", "תל אביב-יפו", streets), "רוטשילד");
+  assert.equal(guessStreet("Rothschild Tel Aviv", "תל אביב-יפו", streets), "רוטשילד");
+  assert.equal(guessStreet("בן יהודה תל אביב 3 חדרים", "תל אביב-יפו", streets), "בן יהודה");
+  assert.equal(guessStreet("ben yehuda tel aviv", "תל אביב-יפו", streets), "בן יהודה");
+  assert.equal(guessStreet("4 rooms in tel aviv", "תל אביב-יפו", streets), null);
+});
+
+test("year phrases: from, ranges, spacing, and no street guessed from filler words", async () => {
+  const { parseHeuristic, guessStreet } = await import("../site/query.js");
+  const places = ["תל אביב-יפו"];
+  const years = t => { const q = parseHeuristic(t, places); return [q.year_min, q.year_max]; };
+  assert.deepEqual(years("tel aviv deals from 2014"), [2014, null]);
+  assert.deepEqual(years("עסקאות מ 2014 בתל אביב"), [2014, null]);
+  assert.deepEqual(years("תל אביב 2014-2016"), [2014, 2016]);
+  assert.deepEqual(years("tel aviv between 2014 and 2016"), [2014, 2016]);
+  assert.deepEqual(years("תל אביב עד 2016"), [null, 2016]);
+  const streets = [["בת עין", 1, 2, 5], ["מל\"ן", 1, 2, 5]];
+  assert.equal(guessStreet("4 rooms tel aviv between 2014 and 2015", "תל אביב-יפו", streets), null);
+  assert.equal(guessStreet("apartments in tel aviv under 3 million", "תל אביב-יפו", streets), null);
+});

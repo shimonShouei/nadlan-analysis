@@ -5,9 +5,9 @@
 
 import {
   describeQuery, fillBlanks, finalizeQuery, parseHeuristic, queryJsonSchema,
-  rankSettlements, resolveSettlement, resolveStreet, shortlistSettlements,
+  guessStreet, rankSettlements, resolveSettlement, resolveStreet, shortlistSettlements,
   systemPrompt, validateQuery, extractJson,
-} from "./query.js";
+} from "./query.js?v=8";
 
 const $ = id => document.getElementById(id);
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
@@ -18,10 +18,12 @@ const EXAMPLES = [
   ["הכי זול ליד תל אביב", "איפה הכי זול לקנות דירה ליד תל אביב"],
 ];
 
+const BUILD = "v8";   // shown at the end of the status line so a stale cached script is easy to spot
 let workerUrl = "";
 let localSession = null;
 let localMode = null;
 let last = null;
+let runId = 0;
 
 function mapApi() {
   return window.NadlanMap || null;
@@ -67,10 +69,12 @@ async function detectLocal() {
 function statusLine(kind) {
   const el = $("search-status");
   if (!el) return;
+  el.dataset.build = BUILD;
   if (kind === "device") el.textContent = "חיפוש חכם זמין במכשיר (Gemini Nano). המודל רק מפרש את השאלה.";
   else if (kind === "downloadable") el.textContent = "מודל Chrome זמין להורדה. בינתיים החיפוש הוא לפי טקסט, או דרך השרת אם הוגדר.";
   else if (kind === "worker") el.textContent = "חיפוש חכם דרך השרת כשאין מודל במכשיר. המודל רק מפרש את השאלה.";
   else el.textContent = "חיפוש לפי שם יישוב ומספרים בטקסט. בלי מודל, המשפט צריך להכיל את שם היישוב.";
+  el.textContent += ` [${BUILD}]`;
 }
 
 async function ensureSession(detected) {
@@ -101,9 +105,26 @@ async function promptFits(session, text) {
   return text.length < 8000;
 }
 
+async function freshSession(detected) {
+  const base = await ensureSession(detected);
+  if (typeof base.clone === "function") {
+    try { return { session: await base.clone(), done: s => s.destroy?.() }; } catch { /* fall through */ }
+  }
+  localSession = null;   // no clone(): make a new session per question
+  return { session: await ensureSession(detected), done: () => { localSession?.destroy?.(); localSession = null; } };
+}
+
 async function promptLocal(question, names, dealTypes, detected) {
   if (!detected || detected.status !== "available") return null;
-  const session = await ensureSession(detected);
+  const { session, done } = await freshSession(detected);
+  try {
+    return await promptWith(session, question, names, dealTypes);
+  } finally {
+    try { done(session); } catch { /* already gone */ }
+  }
+}
+
+async function promptWith(session, question, names, dealTypes) {
   const schema = queryJsonSchema();
   let list = names;
   let truncated = false;
@@ -177,7 +198,7 @@ async function interpret(question, settlements, dealTypes, detected) {
 function render(state) {
   const out = $("search-out");
   if (!out) return;
-  const { query, source, ignored, described, ranked, basis } = state;
+  const { query, source, ignored, described, ranked, basis, examples } = state;
   const sourceText = source === "device"
     ? "פוענח במכשיר. המספרים להלן מחושבים מהנתונים באתר."
     : source === "worker"
@@ -199,8 +220,11 @@ function render(state) {
       return `<button type="button" class="rank" data-lon="${row.lon}" data-lat="${row.lat}">${esc(row.name)} · ${km}${esc(money.format(Math.round(row.value)))}${unit}</button>`;
     }).join("")
     : "";
-  out.innerHTML = `<p class="search-note">${sourceText}</p><div class="chips">${chips}</div>${skipped}${notes}${dropped}${ranks}`;
-  out.querySelectorAll(".rank").forEach(btn => {
+  const deals = examples && examples.error ? `<p class="search-warn">טעינת העסקאות נכשלה: ${esc(examples.error)}</p>`
+    : examples && examples.count != null
+    ? `<p class="search-note">${examples.count ? `${examples.count} עסקאות אחרונות מוצגות בלשונית "עסקאות".` : "לא נמצאו עסקאות לדוגמה באזור."}</p>` : "";
+  out.innerHTML = `<p class="search-note">${sourceText}</p><div class="chips">${chips}</div>${skipped}${notes}${dropped}${ranks}${deals}`;
+  out.querySelectorAll(".rank:not(.deal)").forEach(btn => {
     btn.addEventListener("click", () => mapApi()?.flyTo(Number(btn.dataset.lon), Number(btn.dataset.lat), 13));
   });
 }
@@ -215,6 +239,7 @@ function contextFor(streetStatus) {
 }
 
 async function run(question) {
+  const mine = ++runId;
   const api = mapApi();
   const out = $("search-out");
   if (!api) return;
@@ -233,16 +258,30 @@ async function run(question) {
   const dealTypes = meta.types || [];
   const detected = await detectLocal();
   const { query, source, ignored } = await interpret(question, settlements, dealTypes, detected);
+  if (mine !== runId) return;
 
   let streetStatus = query.street ? "need_settlement" : "none";
   let streetHit = null;
-  if (query.street && query.settlement) {
+  if (query.settlement && !query.rank) {
     const loaded = await api.loadStreets(query.settlement);
-    if (loaded.status === "missing") streetStatus = "no_index";
+    if (loaded.status === "missing") { if (query.street) streetStatus = "no_index"; }
     else {
-      streetHit = resolveStreet(query.street, loaded.streets);
-      streetStatus = streetHit ? "resolved" : "not_in_index";
-      if (streetHit) query.street = streetHit.name;
+      // The model (or the text parser) may give the street in Latin letters or with extra words; try the
+      // Hebrew list with the name it gave, then with that name transliterated by consonants, then the whole question.
+      if (query.street) {
+        streetHit = resolveStreet(query.street, loaded.streets);
+        if (!streetHit) {
+          const guess = guessStreet(query.street, query.settlement, loaded.streets) || guessStreet(question, query.settlement, loaded.streets);
+          if (guess) streetHit = resolveStreet(guess, loaded.streets);
+        }
+      } else {
+        const guess = guessStreet(question, query.settlement, loaded.streets);
+        if (guess) { query.street = guess; streetHit = resolveStreet(guess, loaded.streets); }
+      }
+      if (query.street) {
+        streetStatus = streetHit ? "resolved" : "not_in_index";
+        if (streetHit) query.street = streetHit.name;
+      }
     }
   }
 
@@ -255,13 +294,23 @@ async function run(question) {
   api.setQuery(query, { street: streetHit ? streetHit.name : "" });
 
   const target = streetHit
-    ? { lon: streetHit.lon, lat: streetHit.lat, zoom: 16 }
+    ? { lon: streetHit.lon, lat: streetHit.lat, zoom: 18.5 }
     : ranked[0]
       ? { lon: ranked[0].lon, lat: ranked[0].lat, zoom: 13 }
       : (query.settlement && settlements.find(s => s.name === query.settlement));
   if (target && target.lon != null) api.flyTo(target.lon, target.lat, target.zoom || 13);
 
-  last = { query, source, ignored, described, ranked, basis: ranked[0]?.basis || null, streetStatus };
+  let examples = null;
+  // no place in the question: use the area on screen
+  const centre = streetHit || (query.settlement && settlements.find(s => s.name === query.settlement)) || ranked[0]
+    || (query.rank ? null : api.getCenter());
+  if (centre && centre.lon != null && !query.rank) {
+    try {
+      const places = await api.findExamples(centre.lon, centre.lat, streetHit ? 0.015 : 0.04);
+      examples = { count: await api.showResults(places, query.settlement || query.street) };
+    } catch (err) { console.error(err); examples = { count: null, error: String(err.message || err) }; }
+  }
+  last = { query, source, ignored, described, ranked, basis: ranked[0]?.basis || null, streetStatus, examples };
   render(last);
   $("search-clear").hidden = false;
 }

@@ -77,8 +77,10 @@
   .hbar .fill { height: 10px; background: var(--bar); border-radius: 0 4px 4px 0; min-width: 2px; }
   .hbar .val { font-variant-numeric: tabular-nums; color: var(--ink2); }
   #stats table { font-size: 12px; }
+  tr.pick { cursor: pointer; } tr.pick:hover { background: var(--chip); }
 
   #search { top: 12px; left: 320px; right: 220px; padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; max-height: min(70vh, 560px); overflow: auto; }
+  body.has-panel #search { right: calc(min(480px, 100vw - 24px) + 24px); }
   #search-form { display: flex; gap: 6px; }
   #search-q { flex: 1; min-width: 0; border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; font: inherit; background: var(--bg); color: var(--ink); }
   #search-form button, #search-examples .example, #search-out .rank { border: 1px solid var(--line); background: var(--bg); color: var(--accent); border-radius: 8px; padding: 7px 10px; font: inherit; font-weight: 600; cursor: pointer; }
@@ -92,7 +94,8 @@
   #search-out:empty, #search-examples:empty { display: none; }
 
   @media (max-width: 960px) {
-    #search { left: 8px; right: 8px; top: 8px; max-height: 140px; }
+    #search, body.has-panel #search { left: 8px; top: 8px; max-height: 140px; }
+    #search { right: 8px; }
     #legend { top: 156px; }
     body.has-panel #legend { display: none; }
   }
@@ -102,7 +105,7 @@
     #legend .row { font-size: 11px; }
     #open-stats { top: 8px; right: 8px; }
     #search { top: 52px; left: 8px; right: 8px; max-height: 220px; }
-    body.has-panel #search { max-height: 148px; }
+    body.has-panel #search { right: 8px; max-height: 148px; }
     body.has-panel #legend { display: none; }
     th, td { padding: 5px 4px; font-size: 12px; }
     .tag { white-space: normal; max-width: 120px; }
@@ -360,6 +363,7 @@ async function select(feature) {
   map.setFilter("b-selected", ["==", ["get", "id"], isBuilding ? p.id : -1]);
   current = { parcels, addresses, isBuilding, isBlock, exact: p.exact === true || p.exact === "true" };
   blockMode = false;
+  els["toggle-block"].hidden = false;
   els["tab-detail"].disabled = false;
   showTab("detail");
   els.title.textContent = isBlock ? `גוש ${parcels[0].split("/")[0]}`
@@ -630,6 +634,99 @@ function applySearchQuery(query, extra = {}) {
   showTab("stats");
 }
 
+// Example deals for the search box: flats passing the active filters, newest first, taken from the stats
+// cells around a centre (a settlement's centre, or the matched street). Addresses come from the cell's points.
+async function findExamples(lon, lat, radius, limit = 25) {
+  const q = activeQuery;
+  if (!q || !window.NadlanQuery) return [];
+  const c = META.cell, keyOf = (x, y) => `${Math.floor(x / c)}_${Math.floor(y / c)}`;
+  const keys = [];
+  for (let x = Math.floor((lon - radius) / c); x <= Math.floor((lon + radius) / c); x++)
+    for (let y = Math.floor((lat - radius) / c); y <= Math.floor((lat + radius) / c); y++)
+      if (store.stats.keys.has(`${x}_${y}`)) keys.push(`${x}_${y}`);
+  await fetchCells("stats", keys);
+  const caps = { rooms: true };
+  const cand = [];
+  for (const key of keys) {
+    for (const [plon, plat, , flats] of store.stats.data.get(key)?.d || []) {
+      if (Math.abs(plon - lon) > radius || Math.abs(plat - lat) > radius) continue;
+      let best = null;
+      for (const flat of flats) {
+        if (flat.length < 4 && (q.rooms_min != null || q.rooms_max != null)) continue;
+        if (!window.NadlanQuery.flatPasses(flat, q, caps)) continue;
+        if (!best || flat[0] > best[0]) best = flat;
+      }
+      if (best) cand.push({ lon: plon, lat: plat, flat: best });
+    }
+  }
+  cand.sort((a, b) => b.flat[0] - a.flat[0]);
+  const cellKeys = [...new Set(cand.slice(0, streetNeedle ? 400 : limit * 3).map(x => keyOf(x.lon, x.lat)))];
+  await fetchCells("cells", cellKeys.filter(k => store.cells.keys.has(k)));
+  const propsAt = new Map();
+  for (const k of cellKeys) for (const f of store.cells.data.get(k)?.d.p.features || []) {
+    const [x, y] = f.geometry.coordinates;
+    propsAt.set(`${x.toFixed(5)},${y.toFixed(5)}`, f.properties);
+  }
+  const blds = cellKeys.flatMap(k => store.cells.data.get(k)?.d.b.features || []).map(f => {
+    const ring = f.geometry.coordinates[0], xs = ring.map(r => r[0]), ys = ring.map(r => r[1]);
+    return { f, x0: Math.min(...xs), x1: Math.max(...xs), y0: Math.min(...ys), y1: Math.max(...ys) };
+  });
+  const list = v => typeof v === "string" ? (() => { try { return JSON.parse(v); } catch { return []; } })() : (v || []);
+  const out = [];
+  for (const x of cand) {
+    let props = propsAt.get(`${x.lon.toFixed(5)},${x.lat.toFixed(5)}`);
+    if (!props) props = blds.find(b => x.lon >= b.x0 - 2e-5 && x.lon <= b.x1 + 2e-5 && x.lat >= b.y0 - 2e-5 && x.lat <= b.y1 + 2e-5)?.f.properties;
+    const addrs = list(props?.addresses), parcels = list(props?.parcels);
+    if (streetNeedle && !addrs.some(a => window.NadlanQuery.addressOnStreet(a, streetNeedle))) continue;
+    if (!parcels.length) continue;
+    const onStreet = streetNeedle ? addrs.find(a => window.NadlanQuery.addressOnStreet(a, streetNeedle)) : null;
+    out.push({ lon: x.lon, lat: x.lat, address: onStreet || addrs[0] || "", parcels });
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
+// Search results in the deals tab: the newest deals that pass the active filters, from the example buildings.
+async function showResults(places, title) {
+  if (!activeQuery || !places) return;
+  current = null;
+  els["tab-detail"].disabled = false;
+  showTab("detail");
+  els["toggle-block"].hidden = true;
+  els.title.textContent = title || "תוצאות החיפוש";
+  els.deals.innerHTML = '<div class="empty">טוען…</div>';
+  const rows = [];
+  for (const pl of places) {
+    const before = rows.length;
+    const gushes = [...new Set(pl.parcels.map(s => s.split("/")[0]))];
+    const mine = new Set(pl.parcels);
+    for (const g of gushes) {
+      for (const d of await loadBlock(g)) {
+        if (!mine.has(`${g}/${d.c}`)) continue;
+        const unit = d.p ? d.paid / d.p : null;
+        const e = { ...d, gush: g, unit, ppsqm: unit && d.a ? unit / d.a : null, address: pl.address, lon: pl.lon, lat: pl.lat };
+        if (!e.s && window.NadlanQuery.dealPasses(e, activeQuery, META.apt_types)) rows.push(e);
+      }
+    }
+    // newest three per building, so a few busy buildings do not fill the list
+    rows.splice(before, rows.length - before, ...rows.slice(before).sort((a, b) => b.d.localeCompare(a.d)).slice(0, 3));
+  }
+  rows.sort((a, b) => b.d.localeCompare(a.d));
+  const seen = new Set(), uniq = rows.filter(d => { const k = `${d.gush}/${d.c}/${d.d}/${d.paid}/${d.a}`; return !seen.has(k) && seen.add(k); });
+  const shown = uniq.slice(0, 60);
+  els.chips.innerHTML = `<span class="chip">${fmt.format(shown.length)} עסקאות אחרונות שעונות על החיפוש</span>`;
+  els.note.textContent = "דוגמאות מהבניינים באזור. הקליקו על שורה כדי לעבור לבניין.";
+  els.deals.innerHTML = shown.length
+    ? `<table><thead><tr><th>תאריך</th><th>כתובת</th><th>חדרים</th><th>מ"ר</th><th>מחיר</th><th>למ"ר</th></tr></thead><tbody>${shown.map((d, i) =>
+      `<tr class="pick" data-i="${i}"><td class="num">${d.d.split("-").reverse().join("/")}</td><td>${esc(d.address || "—")}</td><td class="num">${d.r ?? "—"}</td><td class="num">${d.a ?? "—"}</td><td class="num">${money(d.unit ?? d.paid)}</td><td class="num">${money(d.ppsqm)}</td></tr>`).join("")}</tbody></table>`
+    : '<div class="empty">לא נמצאו עסקאות שעונות על הסינון באזור.</div>';
+  els.deals.querySelectorAll(".pick").forEach(tr => tr.addEventListener("click", () => {
+    const d = shown[Number(tr.dataset.i)];
+    map.flyTo({ center: [d.lon, d.lat], zoom: 18, essential: true });
+  }));
+  return shown.length;
+}
+
 let streetIndexPromise = null;
 const streetFiles = new Map();
 async function loadStreets(name) {
@@ -655,6 +752,9 @@ window.NadlanMap = {
   setQuery: (query, extra) => applySearchQuery(query, extra),
   clearQuery: () => applySearchQuery(null),
   loadStreets,
+  findExamples,
+  getCenter: () => { const c = map.getCenter(); return { lon: c.lng, lat: c.lat }; },
+  showResults,
   roomsInAreaStats: () => map.getZoom() >= DETAIL_ZOOM && roomsObserved(),
   zoomedIn: () => map.getZoom() >= DETAIL_ZOOM,
   onView: fn => { viewHook = fn; },
@@ -675,6 +775,6 @@ function bindTips() {
   });
 }
 </script>
-<script type="module" src="search.js"></script>
+<script type="module" src="search.js?v=8"></script>
 </body>
 </html>
